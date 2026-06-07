@@ -186,8 +186,8 @@ type IntermediateResult struct {
 	Label     string `json:"label"`
 	Model     string `json:"model"`
 	Phase     string `json:"phase"`
-	Result    any    `json:"result,omitempty"`        // full journal result (arbitrary JSON); or preview if truncated
-	Preview   string `json:"resultPreview,omitempty"` // present when Truncated
+	Result    any    `json:"result,omitempty" jsonschema:"the agent's full result as arbitrary JSON (object, array, or scalar); preview field is used instead when truncated"` // full journal result; or preview if truncated
+	Preview   string `json:"resultPreview,omitempty"`                                                                                                                          // present when Truncated
 	Truncated bool   `json:"truncated"`
 }
 
@@ -209,12 +209,12 @@ type WriteInfo struct {
 
 type StatusOutput struct {
 	JobID        string               `json:"jobId"`
-	RunID        *string              `json:"runId"`            // null during blind window
-	Status       string               `json:"status"`           // queued|running|completed|failed|aborted (mapped)
-	Phase        *string              `json:"phase"`            // == run.currentPhase; null if unknown
-	BlindWindow  bool                 `json:"blind_window"`     // true while run file does not yet exist
-	Intermediate []IntermediateResult `json:"intermediate"`     // grows each poll
-	Result       any                  `json:"result,omitempty"` // coerced contract (§5.4) when completed; `any` so the workflow-defined JSON passes go-sdk output-schema validation
+	RunID        *string              `json:"runId"`                                                                                                                               // null during blind window
+	Status       string               `json:"status"`                                                                                                                              // queued|running|completed|failed|aborted (mapped)
+	Phase        *string              `json:"phase"`                                                                                                                               // == run.currentPhase; null if unknown
+	BlindWindow  bool                 `json:"blind_window"`                                                                                                                        // true while run file does not yet exist
+	Intermediate []IntermediateResult `json:"intermediate"`                                                                                                                        // grows each poll
+	Result       any                  `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"` // any + jsonschema tag => object schema ({description}) that accepts any JSON and validates in strict MCP clients (Claude Code)
 	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
 	Write        *WriteInfo           `json:"write,omitempty"` // iff write
 	Error        string               `json:"error,omitempty"` // failed/aborted message
