@@ -1,0 +1,19 @@
+# Go
+/pi-mcp
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+go.work
+go.work.sum
+
+# pi run artifacts (if a probe/run writes into the project cwd)
+/.pi/
+
+# large regenerated raw stream fixtures (keep only trimmed ones)
+docs/research/fixtures/*.full.jsonl
+
+# editor/OS
+.DS_Store
+*.swp

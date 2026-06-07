@@ -1,0 +1,9 @@
+You MUST accomplish this by making exactly ONE call to the `workflow` tool with background:false. Do not answer directly. Do not use background:true. I need the final synthesized result returned INLINE in this same turn.
+
+TASK: Judge each of three short claims as TRUE or FALSE with a one-sentence reason, then give one overall one-line verdict.
+Claims:
+A) The Earth orbits the Sun.
+B) Water boils at 10 degrees Celsius at sea level.
+C) 7 is a prime number.
+
+Author a small workflow script: a phase titled "Scan" with one agent() per claim (3 agents) each returning {claim, verdict, reason}; then a phase titled "Final" with ONE agent labeled "final synthesis" that aggregates them. The workflow must return an object {claims: [...], overall: "..."}. Keep every agent prompt tiny.
