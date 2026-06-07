@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,8 +9,7 @@ import (
 	"pi-mcp/internal/model"
 )
 
-func ctxBG() context.Context                       { return context.Background() }
-func jsonUnmarshal(b json.RawMessage, v any) error { return json.Unmarshal(b, v) }
+func ctxBG() context.Context { return context.Background() }
 
 // --- M8: wake-predicate snapshot ---
 
@@ -141,16 +139,17 @@ func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
 	if out.Write != nil {
 		t.Fatalf("read mode must not populate write")
 	}
-	// .result coerced ({claims,overall} -> summary added, originals preserved)
-	var res map[string]any
-	if err := jsonUnmarshal(out.Result, &res); err != nil {
-		t.Fatalf("result not object: %s", out.Result)
+	// .result coerced ({claims,overall} -> summary added, originals preserved).
+	// out.Result is now `any` (decoded JSON object), not raw bytes.
+	res, ok := out.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result not object: %#v", out.Result)
 	}
 	if _, ok := res["claims"]; !ok {
-		t.Fatalf("result lost original keys: %s", out.Result)
+		t.Fatalf("result lost original keys: %#v", out.Result)
 	}
 	if _, ok := res["summary"]; !ok {
-		t.Fatalf("result missing synthesized summary: %s", out.Result)
+		t.Fatalf("result missing synthesized summary: %#v", out.Result)
 	}
 }
 

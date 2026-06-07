@@ -9,6 +9,11 @@ import (
 	"pi-mcp/internal/model"
 )
 
+// correlatePollInterval is how often correlate() re-scans the runs dir for the
+// late-arriving run file after the session event (the run file lands ~20-26s
+// later). Kept off the hot path; never busy-spins.
+var correlatePollInterval = 500 * time.Millisecond
+
 // Config configures a Registry.
 type Config struct {
 	Cap          int              // max concurrent running jobs; <=0 -> DefaultConcurrencyCap
@@ -149,9 +154,12 @@ func (r *Registry) start(j *Job) {
 
 	// Correlate jobId -> runId via the first session event. Closing correlated
 	// lets finish() wait for this goroutine, so no late flush races test cleanup.
+	// ctx is the launch context; the wait()-goroutine cancels it the moment the
+	// process exits (before finish() blocks on `correlated`), which bounds the
+	// correlation poll without deadlocking against finish().
 	go func() {
 		defer close(correlated)
-		r.correlate(j, sessionCh)
+		r.correlate(ctx, j, sessionCh)
 	}()
 
 	go func() {
@@ -174,20 +182,70 @@ func (r *Registry) start(j *Job) {
 }
 
 // correlate consumes the sessionId from the first session event and resolves
-// the runId (best-effort; the run file may not exist yet — blind window).
-func (r *Registry) correlate(j *Job, sessionCh <-chan string) {
-	sid, ok := <-sessionCh
-	if !ok || sid == "" {
+// the runId. The run file is written by pi ~20-26s AFTER the session event, so a
+// single lookup almost always misses (blind window) and would leave RunID=""
+// forever. Instead we push the sessionId immediately, then POLL
+// RunIDForSession on an interval until it resolves, the launch ctx is canceled
+// (process exited / Close()), or the session channel closed without a sessionId.
+// The poll is bounded by the job lifetime: ctx.Done() fires when wait() returns,
+// before finish() blocks on `correlated`, so there is no deadlock and no leak.
+func (r *Registry) correlate(ctx context.Context, j *Job, sessionCh <-chan string) {
+	var sid string
+	select {
+	case s, ok := <-sessionCh:
+		if !ok || s == "" {
+			return
+		}
+		sid = s
+	case <-ctx.Done():
 		return
 	}
+
+	// Push the sessionId immediately so it is persisted even if the run file
+	// never appears (resolved == false below).
 	r.mu.Lock()
 	j.Record.SessionID = sid
-	if runID, found := r.correlator.RunIDForSession(j.Record.RunsDir, sid); found {
-		j.Record.RunID = runID
-	}
+	resolved := r.tryResolveRunUnlocked(j, sid)
 	j.updatedAt = r.now()
 	_ = r.flushUnlocked()
 	r.mu.Unlock()
+	if resolved {
+		return
+	}
+
+	// Poll for the late-arriving run file until it resolves or the job ends.
+	ticker := time.NewTicker(correlatePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.mu.Lock()
+			resolved := r.tryResolveRunUnlocked(j, sid)
+			if resolved {
+				j.updatedAt = r.now()
+				_ = r.flushUnlocked()
+			}
+			r.mu.Unlock()
+			if resolved {
+				return
+			}
+		}
+	}
+}
+
+// tryResolveRunUnlocked sets j.Record.RunID from the correlator if the run file
+// for sid now exists. Returns true once RunID is populated. Caller holds mu.
+func (r *Registry) tryResolveRunUnlocked(j *Job, sid string) bool {
+	if j.Record.RunID != "" {
+		return true
+	}
+	if runID, found := r.correlator.RunIDForSession(j.Record.RunsDir, sid); found {
+		j.Record.RunID = runID
+		return true
+	}
+	return false
 }
 
 // finish marks a job terminal, releases its slot, admits the next queued job,

@@ -48,9 +48,10 @@ func TestBuildIntermediate_JoinByIndex(t *testing.T) {
 	if second.Model != "deepseek/deepseek-v4-flash" || second.Phase != "Scan" {
 		t.Fatalf("join wrong model/phase: %+v", second)
 	}
-	var r map[string]any
-	if err := json.Unmarshal(second.Result, &r); err != nil || r["claim"] != "C" {
-		t.Fatalf("result wrong for index 2: %s", second.Result)
+	// Result is now `any` (decoded JSON object), not raw bytes.
+	r, ok := second.Result.(map[string]any)
+	if !ok || r["claim"] != "C" {
+		t.Fatalf("result wrong for index 2: %#v", second.Result)
 	}
 	if second.Truncated {
 		t.Fatalf("short result should not be truncated")
@@ -72,8 +73,8 @@ func TestBuildIntermediate_Truncation(t *testing.T) {
 	if got[0].Preview == "" {
 		t.Fatalf("expected non-empty Preview when truncated")
 	}
-	if len(got[0].Result) != 0 {
-		t.Fatalf("truncated entry should omit full Result, got %s", got[0].Result)
+	if got[0].Result != nil {
+		t.Fatalf("truncated entry should omit full Result, got %v", got[0].Result)
 	}
 }
 

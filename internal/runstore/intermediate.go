@@ -1,6 +1,8 @@
 package runstore
 
 import (
+	"encoding/json"
+
 	"pi-mcp/internal/model"
 )
 
@@ -37,11 +39,27 @@ func Intermediates(r *model.Run, maxBytes int) []model.IntermediateResult {
 			ir.Preview = truncatePreview(string(j.Result), maxBytes)
 			// Result left empty when truncated.
 		} else {
-			ir.Result = j.Result
+			// Decode the stored json.RawMessage into `any` so model.IntermediateResult
+			// (whose Result field is `any` for go-sdk output-schema validation)
+			// carries a real object/array/scalar, not raw bytes.
+			ir.Result = rawToAny(j.Result)
 		}
 		out = append(out, ir)
 	}
 	return out
+}
+
+// rawToAny decodes a stored json.RawMessage into an `any` (object/array/scalar).
+// Empty or undecodable input yields nil.
+func rawToAny(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
+	return v
 }
 
 // truncatePreview returns s clipped to at most n bytes without splitting a

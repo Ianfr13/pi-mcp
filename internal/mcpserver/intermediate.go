@@ -30,7 +30,10 @@ func buildIntermediate(run *model.Run, maxBytes int) []model.IntermediateResult 
 			ir.Preview = preview(j.Result, maxBytes)
 			// Result omitted when truncated.
 		} else {
-			ir.Result = j.Result
+			// Unmarshal the stored json.RawMessage into `any` so the OUTPUT struct
+			// carries a real object/array/scalar that passes go-sdk output-schema
+			// validation (json.RawMessage reflects to "null|array" and is rejected).
+			ir.Result = rawToAny(j.Result)
 		}
 		out = append(out, ir)
 	}

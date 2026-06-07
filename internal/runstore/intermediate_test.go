@@ -35,15 +35,20 @@ func TestIntermediates_JoinByCallIndexNotPosition(t *testing.T) {
 		t.Errorf("intermediate[1].Phase = %q, want Scan", got[1].Phase)
 	}
 	// Result must be the COMPLETE journal[].result, not the agent resultPreview.
+	// Result is now `any` (decoded JSON); re-marshal to assert on the shape.
 	var parsed struct {
 		Claim   string `json:"claim"`
 		Verdict string `json:"verdict"`
 	}
-	if err := json.Unmarshal(got[1].Result, &parsed); err != nil {
+	resBytes, err := json.Marshal(got[1].Result)
+	if err != nil {
+		t.Fatalf("intermediate[1].Result not marshalable: %v", err)
+	}
+	if err := json.Unmarshal(resBytes, &parsed); err != nil {
 		t.Fatalf("intermediate[1].Result not valid JSON: %v", err)
 	}
 	if parsed.Verdict != "TRUE" || !strings.Contains(parsed.Claim, "7 is a prime") {
-		t.Errorf("intermediate[1].Result = %s, want the claim-C journal result", got[1].Result)
+		t.Errorf("intermediate[1].Result = %s, want the claim-C journal result", resBytes)
 	}
 	if got[1].Truncated {
 		t.Errorf("intermediate[1].Truncated = true, want false (under limit)")
@@ -85,8 +90,8 @@ func TestIntermediates_TruncatesOverLimit(t *testing.T) {
 		if got[i].Preview == "" {
 			t.Errorf("intermediate[%d].Preview empty, want a preview when truncated", i)
 		}
-		if len(got[i].Result) != 0 {
-			t.Errorf("intermediate[%d].Result not dropped when truncated: %s", i, got[i].Result)
+		if got[i].Result != nil {
+			t.Errorf("intermediate[%d].Result not dropped when truncated: %v", i, got[i].Result)
 		}
 	}
 }

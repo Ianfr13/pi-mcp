@@ -178,13 +178,17 @@ type StatusInput struct {
 }
 
 // IntermediateResult is one completed agent surfaced live (join index==callIndex).
+// Result is `any` (NOT json.RawMessage) because go-sdk v1.0.0 reflects
+// json.RawMessage as schema type "null|array" and VALIDATES outgoing tool
+// output, which rejects a JSON object. `any` reflects to an unconstrained schema
+// so arbitrary workflow-defined JSON (object/array/scalar) passes validation.
 type IntermediateResult struct {
-	Label     string          `json:"label"`
-	Model     string          `json:"model"`
-	Phase     string          `json:"phase"`
-	Result    json.RawMessage `json:"result,omitempty"`        // full journal result; or preview if truncated
-	Preview   string          `json:"resultPreview,omitempty"` // present when Truncated
-	Truncated bool            `json:"truncated"`
+	Label     string `json:"label"`
+	Model     string `json:"model"`
+	Phase     string `json:"phase"`
+	Result    any    `json:"result,omitempty"`        // full journal result (arbitrary JSON); or preview if truncated
+	Preview   string `json:"resultPreview,omitempty"` // present when Truncated
+	Truncated bool   `json:"truncated"`
 }
 
 // StatusMetadata mirrors §5.2 metadata; cost/tokens only at end.
@@ -210,7 +214,7 @@ type StatusOutput struct {
 	Phase        *string              `json:"phase"`            // == run.currentPhase; null if unknown
 	BlindWindow  bool                 `json:"blind_window"`     // true while run file does not yet exist
 	Intermediate []IntermediateResult `json:"intermediate"`     // grows each poll
-	Result       json.RawMessage      `json:"result,omitempty"` // coerced contract (§5.4) when completed
+	Result       any                  `json:"result,omitempty"` // coerced contract (§5.4) when completed; `any` so the workflow-defined JSON passes go-sdk output-schema validation
 	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
 	Write        *WriteInfo           `json:"write,omitempty"` // iff write
 	Error        string               `json:"error,omitempty"` // failed/aborted message

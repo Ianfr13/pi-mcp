@@ -156,7 +156,10 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 
 	if out.Status == "completed" {
 		res, _ := coerceResult(run.Result, out.Status)
-		out.Result = res
+		// res is the coerced json.RawMessage; unmarshal to `any` so the OUTPUT
+		// struct carries a real object/array/scalar. The field is `any` (not
+		// json.RawMessage) so go-sdk output-schema validation accepts it.
+		out.Result = rawToAny(res)
 	}
 	if out.Status == "failed" || out.Status == "aborted" {
 		out.Error = failureMessage(tgt, run)
