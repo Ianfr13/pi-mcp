@@ -1,0 +1,50 @@
+{
+  "runId": "pq71abcd-partial",
+  "workflowName": "judge_claims",
+  "sessionId": "019ea2fe-aaaa-7e31-85ad-partialrun01",
+  "status": "running",
+  "phases": ["Scan", "Final"],
+  "currentPhase": "Scan",
+  "script": "phase('Scan'); /* partial run fixture */",
+  "logs": ["Logs persisted to /tmp/run-pq71abce.log"],
+  "journal": [
+    {
+      "index": 0,
+      "hash": "aaaa0000c153c91a4d0a7df02aff96e467526afe5762c03447a3cc4b42cd00000",
+      "result": { "claim": "A) The Earth orbits the Sun.", "verdict": "TRUE", "reason": "Heliocentric model, confirmed by observation." }
+    },
+    {
+      "index": 2,
+      "hash": "cccc2222c153c91a4d0a7df02aff96e467526afe5762c03447a3cc4b42cd22222",
+      "result": { "claim": "7 is a prime number.", "verdict": "TRUE", "reason": "Exactly two divisors: 1 and 7." }
+    }
+  ],
+  "agents": [
+    {
+      "id": 1, "callIndex": 0, "label": "claim A", "phase": "Scan",
+      "prompt": "Judge: A) The Earth orbits the Sun.", "status": "done",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "{\"claim\":\"A) The Earth orbits the Sun.\",\"verdict\":\"TRUE\"",
+      "tokens": 31514,
+      "startedAt": "2026-06-07T16:51:33.041Z", "endedAt": "2026-06-07T16:51:55.434Z"
+    },
+    {
+      "id": 2, "callIndex": 1, "label": "claim B", "phase": "Scan",
+      "prompt": "Judge: B) Water boils at 10 degrees Celsius at sea level.", "status": "running",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "",
+      "tokens": 0,
+      "startedAt": "2026-06-07T16:51:33.041Z"
+    },
+    {
+      "id": 3, "callIndex": 2, "label": "claim C", "phase": "Scan",
+      "prompt": "Judge: C) 7 is a prime number.", "status": "done",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "{\"claim\":\"7 is a prime number.\",\"verdict\":\"TRUE\"",
+      "tokens": 31568,
+      "startedAt": "2026-06-07T16:51:33.041Z", "endedAt": "2026-06-07T16:51:55.434Z"
+    }
+  ],
+  "startedAt": "2026-06-07T16:51:33.041Z",
+  "updatedAt": "2026-06-07T16:51:55.434Z"
+}

@@ -1,0 +1,154 @@
+{
+  "runId": "corrupt-recovered",
+  "workflowName": "judge_claims",
+  "script": "export const meta = { name: 'judge_claims', description: 'Judge three simple claims and synthesize verdicts', phases: [{ title: 'Scan' }, { title: 'Final' }] };\n\nconst itemSchema = {\n  type: 'object',\n  additionalProperties: false,\n  required: ['claim', 'verdict', 'reason'],\n  properties: {\n    claim: { type: 'string' },\n    verdict: { type: 'string', enum: ['TRUE', 'FALSE'] },\n    reason: { type: 'string' }\n  }\n};\n\nconst finalSchema = {\n  type: 'object',\n  additionalProperties: false,\n  required: ['claims', 'overall'],\n  properties: {\n    claims: { type: 'array', minItems: 3, maxItems: 3, items: itemSchema },\n    overall: { type: 'string' }\n  }\n};\n\nphase('Scan');\nconst inputs = [\n  { label: 'claim A', text: 'A) The Earth orbits the Sun.' },\n  { label: 'claim B', text: 'B) Water boils at 10 degrees Celsius at sea level.' },\n  { label: 'claim C', text: 'C) 7 is a prime number.' }\n];\nconst claims = await parallel(inputs.map(item => () => agent(`Judge: ${item.text}`, { label: item.label, tier: 'small', schema: itemSchema })));\n\nphase('Final');\nreturn await agent(`Aggregate: ${JSON.stringify(claims)}`, { label: 'final synthesis', tier: 'small', schema: finalSchema });",
+  "sessionId": "019ea2fe-db76-7e31-85ad-9718d3fbc23a",
+  "journal": [
+    {
+      "index": 0,
+      "hash": "9b09e477c153c91a4d0a7df02aff96e467526afe5762c03447a3cc4b42cd09d9",
+      "result": {
+        "claim": "A) The Earth orbits the Sun.",
+        "verdict": "TRUE",
+        "reason": "The Earth orbits the Sun as established by heliocentric model (Copernicus, Galileo, Kepler) and confirmed by centuries of astronomical observation, gravitational physics (Newton), and direct evidence such as stellar parallax and spacecraft trajectories."
+      }
+    },
+    {
+      "index": 2,
+      "hash": "34cc1aad1ca2774842a51affbb1a958975c6f4a54b87a35c47e6da5d000520d7",
+      "result": {
+        "claim": "7 is a prime number.",
+        "verdict": "TRUE",
+        "reason": "7 is a natural number greater than 1 that has exactly two distinct positive divisors: 1 and itself. No other positive integer (2, 3, 4, 5, 6) divides 7 evenly. This meets the definition of a prime number."
+      }
+    },
+    {
+      "index": 1,
+      "hash": "68b08fca9bdb968bd034d447a3cd52ac399abc85777d7e37e10b823d16e81484",
+      "result": {
+        "claim": "Water boils at 10 degrees Celsius at sea level.",
+        "verdict": "FALSE",
+        "reason": "Water boils at 100°C (212°F) at sea level under standard atmospheric pressure (1 atm). 10°C is far below the boiling point — water at sea level would be liquid well below 100°C and would only boil at 10°C if the atmospheric pressure were drastically reduced (e.g., at very high altitude or in a vacuum chamber)."
+      }
+    },
+    {
+      "index": 3,
+      "hash": "712389aa848ed4651b28ae69b51c06caf978433723725e904531c8830c281d85",
+      "result": {
+        "claims": [
+          {
+            "claim": "A) The Earth orbits the Sun.",
+            "verdict": "TRUE",
+            "reason": "The Earth orbits the Sun, consistent with the heliocentric model and confirmed by astronomical observations, gravitational physics, stellar parallax, and spacecraft navigation."
+          },
+          {
+            "claim": "Water boils at 10 degrees Celsius at sea level.",
+            "verdict": "FALSE",
+            "reason": "At sea level under standard atmospheric pressure, water boils at about 100°C, not 10°C. Boiling at 10°C would require much lower pressure."
+          },
+          {
+            "claim": "7 is a prime number.",
+            "verdict": "TRUE",
+            "reason": "7 is greater than 1 and has exactly two positive divisors, 1 and 7, so it meets the definition of a prime number."
+          }
+        ],
+        "overall": "Two claims are true and one claim is false: Earth orbits the Sun is true, water boiling at 10°C at sea level is false, and 7 being prime is true."
+      }
+    }
+  ],
+  "status": "completed",
+  "phases": [
+    "Scan",
+    "Final"
+  ],
+  "currentPhase": "Final",
+  "agents": [
+    {
+      "id": 1,
+      "callIndex": 0,
+      "label": "claim A",
+      "phase": "Scan",
+      "prompt": "Judge: A) The Earth orbits the Sun.",
+      "status": "done",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "{\"claim\":\"A) The Earth orbits the Sun.\",\"verdict\":\"TRUE\",\"reason\":\"The Earth or…",
+      "tokens": 31514,
+      "startedAt": "2026-06-07T16:51:33.041Z",
+      "endedAt": "2026-06-07T16:51:55.434Z"
+    },
+    {
+      "id": 2,
+      "callIndex": 1,
+      "label": "claim B",
+      "phase": "Scan",
+      "prompt": "Judge: B) Water boils at 10 degrees Celsius at sea level.",
+      "status": "done",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "{\"claim\":\"Water boils at 10 degrees Celsius at sea level.\",\"verdict\":\"FALSE\",\"r…",
+      "tokens": 31561,
+      "startedAt": "2026-06-07T16:51:33.041Z",
+      "endedAt": "2026-06-07T16:51:55.434Z"
+    },
+    {
+      "id": 3,
+      "callIndex": 2,
+      "label": "claim C",
+      "phase": "Scan",
+      "prompt": "Judge: C) 7 is a prime number.",
+      "status": "done",
+      "model": "deepseek/deepseek-v4-flash",
+      "resultPreview": "{\"claim\":\"7 is a prime number.\",\"verdict\":\"TRUE\",\"reason\":\"7 is a natural numbe…",
+      "tokens": 31568,
+      "startedAt": "2026-06-07T16:51:33.041Z",
+      "endedAt": "2026-06-07T16:51:55.434Z"
+    },
+    {
+      "id": 4,
+      "callIndex": 3,
+      "label": "final synthesis",
+      "phase": "Final",
+      "prompt": "Aggregate: [{\"claim\":\"A) The Earth orbits the Sun.\",\"verdict\":\"TRUE\",\"reason\":\"The Earth orbits the Sun as established by heliocentric model (Copernicus, Galileo, Kepler) and confirmed by centuries of astronomical observation, gravitational physics (Newton), and direct evidence such as stellar parallax and spacecraft trajectories.\"},{\"claim\":\"Water boils at 10 degrees Celsius at sea level.\",\"verdict\":\"FALSE\",\"reason\":\"Water boils at 100°C (212°F) at sea level under standard atmospheric pressure (1 atm). 10°C is far below the boiling point — water at sea level would be liquid well below 100°C and would only boil at 10°C if the atmospheric pressure were drastically reduced (e.g., at very high altitude or in a vacuum chamber).\"},{\"claim\":\"7 is a prime number.\",\"verdict\":\"TRUE\",\"reason\":\"7 is a natural number greater than 1 that has exactly two distinct positive divisors: 1 and itself. No other positive integer (2, 3, 4, 5, 6) divides 7 evenly. This meets the definition of a prime number.\"}]",
+      "status": "done",
+      "model": "openai-codex/gpt-5.5",
+      "resultPreview": "{\"claims\":[{\"claim\":\"A) The Earth orbits the Sun.\",\"verdict\":\"TRUE\",\"reason\":\"T…",
+      "tokens": 25826,
+      "startedAt": "2026-06-07T16:51:33.041Z",
+      "endedAt": "2026-06-07T16:51:55.434Z"
+    }
+  ],
+  "logs": [
+    "Logs persisted to /root/pi-mcp/.pi/workflows/runs/run-mq40rdpu.log"
+  ],
+  "result": {
+    "claims": [
+      {
+        "claim": "A) The Earth orbits the Sun.",
+        "verdict": "TRUE",
+        "reason": "The Earth orbits the Sun, consistent with the heliocentric model and confirmed by astronomical observations, gravitational physics, stellar parallax, and spacecraft navigation."
+      },
+      {
+        "claim": "Water boils at 10 degrees Celsius at sea level.",
+        "verdict": "FALSE",
+        "reason": "At sea level under standard atmospheric pressure, water boils at about 100°C, not 10°C. Boiling at 10°C would require much lower pressure."
+      },
+      {
+        "claim": "7 is a prime number.",
+        "verdict": "TRUE",
+        "reason": "7 is greater than 1 and has exactly two positive divisors, 1 and 7, so it meets the definition of a prime number."
+      }
+    ],
+    "overall": "Two claims are true and one claim is false: Earth orbits the Sun is true, water boiling at 10°C at sea level is false, and 7 being prime is true."
+  },
+  "tokenUsage": {
+    "input": 116075,
+    "output": 938,
+    "total": 120469,
+    "cost": 0.1463847,
+    "cacheRead": 3456,
+    "cacheWrite": 0
+  },
+  "startedAt": "2026-06-07T16:51:33.041Z",
+  "updatedAt": "2026-06-07T16:51:55.434Z",
+  "completedAt": "2026-06-07T16:51:55.434Z",
+  "durationMs": 22391
+}
