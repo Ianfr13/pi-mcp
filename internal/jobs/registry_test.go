@@ -2,7 +2,9 @@ package jobs
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,6 +235,50 @@ func TestCapQueuesFifthJobAndPromotesFIFO(t *testing.T) {
 	}
 	for _, id := range ids {
 		r.waitJob(id)
+	}
+}
+
+// FIX #7: the initial Submit flush is mandatory. When persistence fails, Submit
+// must roll back the admission (no job in the map, no leaked slot, process never
+// started) and return a PERSISTENCE_ERROR-wrapped error.
+func TestSubmitPersistFailureRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	// Force persist's os.MkdirAll to fail with ENOTDIR: use a regular FILE as the
+	// parent directory of the registry path. (Tests run as root, so a read-only
+	// dir would not block writes; only file-as-parent reliably fails.)
+	fileAsDir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	persistPath := filepath.Join(fileAsDir, "registry.json")
+
+	fl := newFakeLauncher("s")
+	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath}, fl, &fakeCorrelator{}, &fakePruner{})
+
+	id := NewID()
+	_, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs",
+		PreassignedID: id})
+	if err == nil {
+		t.Fatal("expected Submit to fail on persist error")
+	}
+	if !strings.Contains(err.Error(), config.ErrPersistenceError) {
+		t.Fatalf("expected error to mention %q, got %v", config.ErrPersistenceError, err)
+	}
+
+	// Job rolled out of the map.
+	if _, ok := r.Lookup(id); ok {
+		t.Fatal("failed Submit must not leave the job in the registry")
+	}
+	// start() never ran -> launcher never invoked.
+	if fl.count() != 0 {
+		t.Fatalf("launcher must not be called on persist failure, got %d", fl.count())
+	}
+	// No slot leak (white-box).
+	r.mu.Lock()
+	leaked := len(r.slots)
+	r.mu.Unlock()
+	if leaked != 0 {
+		t.Fatalf("slot leaked on persist failure: len(r.slots)=%d", leaked)
 	}
 }
 

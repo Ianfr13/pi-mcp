@@ -84,6 +84,7 @@ func TestAllErrorCodes(t *testing.T) {
 		ErrSchemaNoncompliance:   "SCHEMA_NONCOMPLIANCE",
 		ErrPersistenceError:      "PERSISTENCE_ERROR",
 		ErrUnknown:               "UNKNOWN",
+		ErrServerRestarted:       "SERVER_RESTARTED",
 		ErrNotAGitRepo:           "NOT_A_GIT_REPO",
 		ErrNoWorkflowRun:         "NO_WORKFLOW_RUN",
 	}

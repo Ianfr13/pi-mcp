@@ -29,8 +29,28 @@ func (r *Registry) Reconcile(ctx context.Context) (int, error) {
 		rec := rec
 		// Post-restart: sameSession=false; updatedAt unknown, approximate with
 		// StartedAt (documented heuristic).
+		orig := rec.Status
 		eff := effectiveStatus(rec, rec.StartedAt, false, now)
 		rec.Status = eff
+		switch {
+		case orig == model.JobQueued:
+			// A recovered queued job cannot be relaunched (Task/Context are never
+			// persisted), so terminalize it instead of leaving it stuck.
+			rec.Status = model.JobFailed
+			rec.ErrorCode = config.ErrServerRestarted
+		case orig == model.JobRunning && eff == model.JobFailed:
+			// Stale running -> failed: surface a code (for finding-#5) but never
+			// clobber a persisted engine error code.
+			if rec.ErrorCode == "" {
+				rec.ErrorCode = config.ErrServerRestarted
+			}
+		case eff == model.JobRunning && rec.SessionID != "" && rec.RunID == "":
+			// Still running and uncorrelated: try a one-shot, non-blocking resume
+			// of the sessionId->runId mapping.
+			if runID, ok := r.correlator.RunIDForSession(rec.RunsDir, rec.SessionID); ok {
+				rec.RunID = runID
+			}
+		}
 		j := &Job{
 			Record:    rec,
 			updatedAt: now,
@@ -40,7 +60,7 @@ func (r *Registry) Reconcile(ctx context.Context) (int, error) {
 		// waiters do not hang on terminal/stale records.
 		close(j.done)
 		r.jobs[rec.JobID] = j
-		if !isTerminal(eff) {
+		if !isTerminal(rec.Status) {
 			live[rec.JobID] = true
 		}
 	}

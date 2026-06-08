@@ -32,6 +32,11 @@ func newFakeLauncher(sessionID string) *fakeLauncher {
 }
 
 func (f *fakeLauncher) Launch(ctx context.Context, spec Spec) (int, <-chan string, func() error, error) {
+	// Mirror the real launcher's pre-canceled-Start semantics (invariant e): if
+	// ctx is already canceled, Launch fails immediately like cmd.Start().
+	if err := ctx.Err(); err != nil {
+		return 0, nil, nil, err
+	}
 	f.mu.Lock()
 	f.launched++
 	rel := make(chan struct{})
@@ -71,6 +76,70 @@ func (f *fakeLauncher) count() int {
 	defer f.mu.Unlock()
 	return f.launched
 }
+
+// cleanExitLauncher is a Launcher whose wait() blocks ONLY on its release
+// channel and then returns nil — it never selects on ctx. This models a process
+// that exits cleanly even after a cancel/kill request, so finish() is driven
+// with JobCompleted while Cancel has already set JobAborted. Used to exercise
+// the finish() compare-and-set guard (a clean exit must not overwrite aborted).
+type cleanExitLauncher struct {
+	mu      sync.Mutex
+	release chan struct{}
+}
+
+func newCleanExitLauncher() *cleanExitLauncher {
+	return &cleanExitLauncher{release: make(chan struct{})}
+}
+
+func (f *cleanExitLauncher) Launch(ctx context.Context, spec Spec) (int, <-chan string, func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, nil, err
+	}
+	sessionCh := make(chan string)
+	close(sessionCh) // no session event; correlate exits immediately
+	rel := f.release
+	wait := func() error {
+		<-rel // blocks ONLY on release; ignores ctx so it returns nil after a kill
+		return nil
+	}
+	return 4242, sessionCh, wait, nil
+}
+
+func (f *cleanExitLauncher) releaseAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	close(f.release)
+}
+
+// blockingWaitLauncher is a Launcher whose wait() blocks until release; the
+// session channel is left open (no event) so correlate() parks on ctx. Used by
+// the white-box admission test (j.cancel must be non-nil while running).
+type blockingWaitLauncher struct {
+	release chan struct{}
+}
+
+func newBlockingWaitLauncher() *blockingWaitLauncher {
+	return &blockingWaitLauncher{release: make(chan struct{})}
+}
+
+func (f *blockingWaitLauncher) Launch(ctx context.Context, spec Spec) (int, <-chan string, func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, nil, err
+	}
+	sessionCh := make(chan string) // never emits; correlate() parks on ctx.Done()
+	rel := f.release
+	wait := func() error {
+		select {
+		case <-rel:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	}
+	return 4242, sessionCh, wait, nil
+}
+
+func (f *blockingWaitLauncher) releaseAll() { close(f.release) }
 
 // fakeCorrelator maps sessionID -> runID from a fixed table.
 type fakeCorrelator struct {

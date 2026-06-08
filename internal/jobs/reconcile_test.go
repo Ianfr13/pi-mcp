@@ -82,6 +82,96 @@ func TestReconcileKeepsTerminalRecords(t *testing.T) {
 	}
 }
 
+// FIX #6: a recovered running job with a sessionId but no runId resumes its
+// correlation via the correlator (one-shot, non-blocking) and stays running; a
+// recovered queued job is terminalized to failed/SERVER_RESTARTED (it cannot be
+// relaunched because Task/Context are not persisted) and is NOT kept live.
+func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
+	dir := t.TempDir()
+	persistPath := filepath.Join(dir, "registry.json")
+	clock := time.Unix(5_000_000, 0)
+	fresh := clock.Add(-time.Second) // stays running (not stale)
+
+	prior := []model.JobRecord{
+		{JobID: "run1", Status: model.JobRunning, Mode: model.ModeRead,
+			CWD: "/p", RunsDir: "/p/runs", SessionID: "sess-1", RunID: "",
+			StartedAt: fresh},
+		{JobID: "q1", Status: model.JobQueued, Mode: model.ModeRead,
+			CWD: "/p", RunsDir: "/p/runs", StartedAt: fresh},
+	}
+	if err := persist(persistPath, prior); err != nil {
+		t.Fatalf("seed persist: %v", err)
+	}
+
+	fc := &fakeCorrelator{table: map[string]string{"sess-1": "run-resolved"}}
+	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got, _ := r.Lookup("run1")
+	if got.Status != model.JobRunning {
+		t.Fatalf("running job should stay running, got %q", got.Status)
+	}
+	if got.RunID != "run-resolved" {
+		t.Fatalf("running job runID should resume to %q, got %q", "run-resolved", got.RunID)
+	}
+
+	gotQ, _ := r.Lookup("q1")
+	if gotQ.Status != model.JobFailed {
+		t.Fatalf("recovered queued job should be failed, got %q", gotQ.Status)
+	}
+	if gotQ.ErrorCode != config.ErrServerRestarted {
+		t.Fatalf("recovered queued job should carry %q, got %q", config.ErrServerRestarted, gotQ.ErrorCode)
+	}
+}
+
+// FIX #6 guards: a recovered running job that ALREADY has a runId keeps it (the
+// correlator is not consulted/overwritten); a running job with a sessionId whose
+// correlator returns not-found keeps RunID "".
+func TestReconcileCorrelationGuards(t *testing.T) {
+	dir := t.TempDir()
+	persistPath := filepath.Join(dir, "registry.json")
+	clock := time.Unix(5_000_000, 0)
+	fresh := clock.Add(-time.Second)
+
+	prior := []model.JobRecord{
+		{JobID: "has-run", Status: model.JobRunning, Mode: model.ModeRead,
+			CWD: "/p", RunsDir: "/p/runs", SessionID: "sess-a", RunID: "already",
+			StartedAt: fresh},
+		{JobID: "no-match", Status: model.JobRunning, Mode: model.ModeRead,
+			CWD: "/p", RunsDir: "/p/runs", SessionID: "sess-b", RunID: "",
+			StartedAt: fresh},
+	}
+	if err := persist(persistPath, prior); err != nil {
+		t.Fatalf("seed persist: %v", err)
+	}
+
+	// Correlator would resolve sess-a if consulted (it must NOT be), and returns
+	// not-found for sess-b.
+	fc := &fakeCorrelator{table: map[string]string{"sess-a": "should-not-apply"}}
+	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	gotA, _ := r.Lookup("has-run")
+	if gotA.RunID != "already" {
+		t.Fatalf("existing runID must be preserved, got %q", gotA.RunID)
+	}
+	gotB, _ := r.Lookup("no-match")
+	if gotB.RunID != "" {
+		t.Fatalf("unmatched session must keep empty runID, got %q", gotB.RunID)
+	}
+	if gotB.Status != model.JobRunning {
+		t.Fatalf("unmatched running job should stay running, got %q", gotB.Status)
+	}
+}
+
 func TestReconcileGCsOrphanWorktrees(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.json")

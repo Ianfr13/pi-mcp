@@ -100,6 +100,30 @@ func TestParseStream_WorkflowIsErrorSurfaced(t *testing.T) {
 	}
 }
 
+func TestParseStream_OversizedLineDoesNotAbort(t *testing.T) {
+	// A single JSONL line > 1MiB (an uninteresting type, so it is skipped) must
+	// NOT abort the scan. The workflow tool_execution_end that follows must still
+	// be detected. On the OLD 1MiB-capped scanner this fails with ErrTooLong.
+	big := strings.Repeat("x", (1<<20)+4096)
+	in := `{"type":"session","id":"s1"}` + "\n" +
+		`{"type":"__big__","blob":"` + big + `"}` + "\n" +
+		`{"type":"tool_execution_end","toolName":"workflow","isError":false,` +
+		`"result":{"content":[{"type":"text","text":"x"}]}}` + "\n"
+	got, err := ParseStream(context.Background(), strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("ParseStream error: %v", err)
+	}
+	if got.SessionID != "s1" {
+		t.Fatalf("SessionID = %q, want %q", got.SessionID, "s1")
+	}
+	if !got.WorkflowFound {
+		t.Fatalf("WorkflowFound = false, want true (oversized line must not abort)")
+	}
+	if got.Result == nil {
+		t.Fatalf("Result = nil, want extracted workflow result")
+	}
+}
+
 func TestParseStream_NonWorkflowToolEndIgnored(t *testing.T) {
 	const in = `{"type":"session","id":"s1"}
 {"type":"tool_execution_end","toolName":"read_file","isError":false,"result":{"content":[{"type":"text","text":"file contents"}]}}

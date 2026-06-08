@@ -95,6 +95,7 @@ const (
 	ErrSchemaNoncompliance   = "SCHEMA_NONCOMPLIANCE"
 	ErrPersistenceError      = "PERSISTENCE_ERROR"
 	ErrUnknown               = "UNKNOWN"
+	ErrServerRestarted       = "SERVER_RESTARTED" // job recovered after a restart but cannot be resumed (queued: Task/Context not persisted; running: process gone)
 
 	// pi-mcp-originated (not engine codes):
 	ErrNotAGitRepo   = "NOT_A_GIT_REPO"  // write cwd is not a git repo (fail before spawn)

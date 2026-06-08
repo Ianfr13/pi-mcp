@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -91,7 +92,26 @@ func (r *Registry) Submit(ctx context.Context, spec Spec) (model.JobRecord, erro
 	r.mu.Lock()
 	r.jobs[j.Record.JobID] = j
 	admitted := r.tryAdmitUnlocked(j)
-	_ = r.flushUnlocked()
+	// The initial Submit flush is mandatory: if we cannot persist the new job we
+	// must not proceed (an un-persisted running job would be lost on restart).
+	// Roll back tryAdmitUnlocked exactly under the SAME held lock, then fail.
+	// (Later flushes in start/correlate/finish stay best-effort for now.)
+	if flushErr := r.flushUnlocked(); flushErr != nil {
+		delete(r.jobs, j.Record.JobID)
+		if admitted {
+			select {
+			case <-r.slots:
+			default:
+			}
+			if j.cancel != nil {
+				j.cancel()
+			}
+		} else {
+			r.removeFromQueueUnlocked(j)
+		}
+		r.mu.Unlock()
+		return model.JobRecord{}, fmt.Errorf("%s: %w", config.ErrPersistenceError, flushErr)
+	}
 	r.mu.Unlock()
 
 	if admitted {
@@ -106,12 +126,22 @@ func (r *Registry) Submit(ctx context.Context, spec Spec) (model.JobRecord, erro
 	return rec, nil
 }
 
+// startingUnlocked installs the launch context+cancel AND marks the job running
+// atomically under r.mu, so a running job never coexists with a nil cancel (the
+// cancel-vs-launch race). Caller holds mu.
+func (r *Registry) startingUnlocked(j *Job) {
+	ctx, cancel := context.WithCancel(context.Background())
+	j.ctx = ctx
+	j.cancel = cancel
+	j.markUnlocked(model.JobRunning, r.now())
+}
+
 // tryAdmitUnlocked grabs a slot for j if one is free, marking it running.
 // Otherwise it enqueues j (queued). Returns true iff admitted. Caller holds mu.
 func (r *Registry) tryAdmitUnlocked(j *Job) bool {
 	select {
 	case r.slots <- struct{}{}:
-		j.markUnlocked(model.JobRunning, r.now())
+		r.startingUnlocked(j)
 		return true
 	default:
 		j.markUnlocked(model.JobQueued, r.now())
@@ -121,11 +151,12 @@ func (r *Registry) tryAdmitUnlocked(j *Job) bool {
 }
 
 // start launches the pi process for an admitted (running) job in a goroutine.
+// The launch ctx/cancel were installed under r.mu at admission time (by
+// startingUnlocked), so start() only reads them — it never creates its own.
 func (r *Registry) start(j *Job) {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	r.mu.Lock()
-	j.cancel = cancel
+	ctx := j.ctx
+	cancel := j.cancel
 	spec := Spec{
 		Mode:     j.Record.Mode,
 		CWD:      j.Record.CWD,
@@ -263,13 +294,19 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	}
 
 	r.mu.Lock()
+	// Read the OLD status FIRST for the slot-release decision (a Cancel that set
+	// aborted still owns a running slot to release).
 	wasRunningSlot := j.Record.Status == model.JobRunning || j.Record.Status == model.JobAborted
-	j.markUnlocked(status, r.now())
-	if errCode != "" {
-		j.Record.ErrorCode = errCode
-	}
-	if errMsg != "" {
-		j.Record.ErrorMessage = errMsg
+	// COMPARE-AND-SET: only write status/error when not already terminal, so a
+	// clean-exit finish(JobCompleted) preserves an 'aborted' that Cancel set.
+	if !isTerminal(j.Record.Status) {
+		j.markUnlocked(status, r.now())
+		if errCode != "" {
+			j.Record.ErrorCode = errCode
+		}
+		if errMsg != "" {
+			j.Record.ErrorMessage = errMsg
+		}
 	}
 	var next *Job
 	if wasRunningSlot {
@@ -282,7 +319,7 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 		if next != nil {
 			select {
 			case r.slots <- struct{}{}:
-				next.markUnlocked(model.JobRunning, r.now())
+				r.startingUnlocked(next)
 			default:
 				// Should not happen (we just freed one); requeue defensively.
 				next.markUnlocked(model.JobQueued, r.now())
@@ -291,9 +328,20 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 			}
 		}
 	}
+	// Capture the write-prune inputs and the post-CAS final status under the lock;
+	// the actual prune runs after Unlock so it never blocks the registry, but
+	// before close(done) so the prune happens-before any waiter observes done.
+	isWrite := j.Record.Mode == model.ModeWrite
+	worktree := j.Record.WorktreePath
+	branch := j.Record.Branch
+	finalStatus := j.Record.Status
 	_ = r.flushUnlocked()
-	close(j.done)
 	r.mu.Unlock()
+
+	if isWrite && finalStatus == model.JobAborted {
+		_ = r.pruner.Prune(worktree, branch)
+	}
+	close(j.done)
 
 	if next != nil {
 		r.start(next)

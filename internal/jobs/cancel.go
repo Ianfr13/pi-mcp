@@ -51,7 +51,9 @@ func (r *Registry) Cancel(jobID string) (model.JobRecord, error) {
 		// Mark aborted FIRST so the wait()-goroutine attributes the kill to a
 		// cancel rather than a failure. Then cancel the context to kill the pid;
 		// the wait-goroutine calls finish(...,JobAborted,...) and releases the
-		// slot + promotes the queue (and closes done).
+		// slot + promotes the queue (and closes done). The worktree prune for
+		// write jobs we launched happens in finish() AFTER the process exits —
+		// never here, while the process may still hold the worktree.
 		j.markUnlocked(model.JobAborted, r.now())
 		j.Record.ErrorCode = config.ErrWorkflowAborted
 		cancel := j.cancel
@@ -60,9 +62,13 @@ func (r *Registry) Cancel(jobID string) (model.JobRecord, error) {
 		r.mu.Unlock()
 
 		if cancel != nil {
+			// A job we launched: kill the process; finish() prunes after it exits.
 			cancel()
-		}
-		if isWrite {
+		} else if isWrite {
+			// A reconcile-recovered running job: cancel==nil, done is already
+			// closed, it holds no slot, and finish() will never run for it — so
+			// prune the worktree synchronously (there is no process we own that
+			// could still be writing it).
 			_ = r.pruner.Prune(worktree, branch)
 		}
 		return snap, nil

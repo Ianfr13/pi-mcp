@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -73,31 +74,35 @@ func (realLauncher) Launch(ctx context.Context, spec jobs.Spec) (int, <-chan str
 // then drains the rest so the TeeReader writer never blocks. It is safe to call
 // even when no session event ever arrives.
 func peekSessionID(r io.Reader, ch chan<- string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// A bufio.Reader with ReadBytes('\n') handles arbitrarily long lines, matching
+	// parser.ParseStream's reader exactly. Both readers MUST consume every line to
+	// EOF at the same threshold or the TeeReader writer deadlocks on a line one
+	// reader accepts and the other rejects.
+	br := bufio.NewReader(r)
 	pushed := false
-	for sc.Scan() {
-		if pushed {
-			continue // keep draining so the tee writer never blocks
+	for {
+		line, err := br.ReadBytes('\n')
+		if !pushed {
+			trimmed := bytes.TrimRight(line, "\n")
+			trimmed = bytes.TrimRight(trimmed, "\r")
+			if len(trimmed) > 0 {
+				var ev struct {
+					Type string `json:"type"`
+					ID   string `json:"id"`
+				}
+				if json.Unmarshal(trimmed, &ev) == nil &&
+					ev.Type == "session" && ev.ID != "" {
+					ch <- ev.ID
+					pushed = true
+				}
+			}
 		}
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var ev struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-		}
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if ev.Type == "session" && ev.ID != "" {
-			ch <- ev.ID
-			pushed = true
+		if err != nil {
+			// io.EOF (clean drain) or a read error: stop. The parser goroutine
+			// owns the authoritative result; we have already drained to EOF.
+			return
 		}
 	}
-	// Drain any error silently; the parser goroutine owns the authoritative result.
-	_ = sc.Err()
 }
 
 // composeWaitError turns the parser result, parser error, and process exit error

@@ -66,8 +66,9 @@ type resolved struct {
 	hasJob       bool
 	worktree     string
 	branch       string
-	errorMessage string // JobRecord.ErrorMessage (§9 extraction order #1)
-	errorCode    string // JobRecord.ErrorCode
+	jobStatus    model.JobStatus // JobRecord.Status (terminal -> surface even with no run file)
+	errorMessage string          // JobRecord.ErrorMessage (§9 extraction order #1)
+	errorCode    string          // JobRecord.ErrorCode
 }
 
 // resolveTarget turns StatusInput into a runsDir+runID via the jobId path or the runId+cwd path.
@@ -80,7 +81,7 @@ func (s *Server) resolveTarget(in model.StatusInput) (resolved, error) {
 		return resolved{
 			runsDir: rec.RunsDir, runID: rec.RunID, jobID: rec.JobID, mode: rec.Mode,
 			pid: rec.PID, hasJob: true, worktree: rec.WorktreePath, branch: rec.Branch,
-			errorMessage: rec.ErrorMessage, errorCode: rec.ErrorCode,
+			jobStatus: rec.Status, errorMessage: rec.ErrorMessage, errorCode: rec.ErrorCode,
 		}, nil
 	}
 	if in.RunID == "" || in.CWD == "" {
@@ -94,6 +95,7 @@ func (s *Server) resolveTarget(in model.StatusInput) (resolved, error) {
 	if rec, ok := s.jobs.LookupByRun(in.RunID, cwd); ok {
 		r.jobID, r.mode, r.pid, r.hasJob = rec.JobID, rec.Mode, rec.PID, true
 		r.worktree, r.branch = rec.WorktreePath, rec.Branch
+		r.jobStatus = rec.Status
 		r.errorMessage, r.errorCode = rec.ErrorMessage, rec.ErrorCode
 		if rec.RunsDir != "" {
 			r.runsDir = rec.RunsDir
@@ -128,9 +130,25 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
 			if tgt.hasJob {
+				if isTerminal(string(tgt.jobStatus)) {
+					// terminal job whose run file never appeared -> surface the
+					// real terminal status (wire vocabulary already), not blind.
+					out.Status = string(tgt.jobStatus)
+					out.BlindWindow = false
+					if tgt.jobStatus == model.JobFailed || tgt.jobStatus == model.JobAborted {
+						out.Error = failureMessage(tgt, nil)
+					}
+					if tgt.mode == model.ModeWrite {
+						out.Write = s.writeBlock(tgt, nil)
+					}
+					return out
+				}
 				// owning job exists but run file absent -> blind window
 				out.Status = "running"
 				out.BlindWindow = true
+				if tgt.mode == model.ModeWrite {
+					out.Write = s.writeBlock(tgt, nil)
+				}
 				return out
 			}
 			// runId path for a run that does not exist yet -> queued/pending, NOT an error
@@ -150,6 +168,7 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 		out.Phase = &ph
 	}
 
+	diskStatus := mapDiskStatus(run.Status)
 	out.Status = liveStatus(run.Status, run.UpdatedAt, s.now(), s.pidIsAlive(tgt))
 	out.Intermediate = buildIntermediate(run, config.MaxInlineResultBytes)
 	out.Metadata = buildMetadata(run)
@@ -166,18 +185,40 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	}
 
 	if tgt.mode == model.ModeWrite && tgt.hasJob {
-		if wi, ok := s.jobs.WriteInfoFor(tgt.jobID); ok {
-			w := wi
-			out.Write = &w
-		} else {
-			// fall back to what the JobRecord already knows (branch/worktree)
-			out.Write = &model.WriteInfo{
-				Branch:       tgt.branch,
-				WorktreePath: tgt.worktree,
+		if isTerminal(diskStatus) && diskStatus != "aborted" {
+			// process actually exited and worktree intact -> safe to stage+diff.
+			if wi, ok := s.jobs.WriteInfoFor(tgt.jobID); ok {
+				w := wi
+				out.Write = &w
+			} else {
+				// fall back to what the JobRecord already knows (branch/worktree)
+				out.Write = &model.WriteInfo{
+					Branch:       tgt.branch,
+					WorktreePath: tgt.worktree,
+				}
 			}
+		} else {
+			// still running/paused/blind, or aborted (worktree pruned): emit the
+			// branch (and worktree, if intact) WITHOUT staging via git add -A.
+			out.Write = s.writeBlock(tgt, run)
 		}
 	}
 	return out
+}
+
+// writeBlock emits a NON-mutating write block: branch always, worktree only when
+// the worktree is intact (i.e. the job is not aborted, whose worktree was pruned).
+// It never runs git add -A; use the WriteInfoFor path for staged diffs.
+func (s *Server) writeBlock(tgt resolved, run *model.Run) *model.WriteInfo {
+	wi := &model.WriteInfo{Branch: tgt.branch}
+	aborted := tgt.jobStatus == model.JobAborted
+	if run != nil && mapDiskStatus(run.Status) == "aborted" {
+		aborted = true
+	}
+	if !aborted {
+		wi.WorktreePath = tgt.worktree
+	}
+	return wi
 }
 
 func (s *Server) pidIsAlive(tgt resolved) bool {
@@ -192,18 +233,23 @@ func (s *Server) pidIsAlive(tgt resolved) bool {
 //	#1 JobRecord.ErrorMessage (the WORKFLOW isError text captured at submit/launch),
 //	#2 run agents[].error,
 //	#3 run logs[0] verbatim,
-//	else a generic code.
+//	then JobRecord.ErrorCode, else a generic code. run may be nil (no run file).
 func failureMessage(tgt resolved, run *model.Run) string {
 	if tgt.errorMessage != "" {
 		return tgt.errorMessage
 	}
-	for _, a := range run.Agents {
-		if a.Status == "error" && a.Error != nil && *a.Error != "" {
-			return *a.Error
+	if run != nil {
+		for _, a := range run.Agents {
+			if a.Status == "error" && a.Error != nil && *a.Error != "" {
+				return *a.Error
+			}
+		}
+		if len(run.Logs) > 0 {
+			return run.Logs[0] // verbatim; never reconstruct the mangled prefix
 		}
 	}
-	if len(run.Logs) > 0 {
-		return run.Logs[0] // verbatim; never reconstruct the mangled prefix
+	if tgt.errorCode != "" {
+		return tgt.errorCode
 	}
 	return config.ErrUnknown
 }
