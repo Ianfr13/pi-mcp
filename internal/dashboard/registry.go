@@ -23,7 +23,7 @@ func ReadRegistry(dbPath string) ([]model.JobRecord, error) {
 	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
 		return []model.JobRecord{}, nil
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)&mode=ro")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)&mode=ro")
 	if err != nil {
 		return nil, err
 	}

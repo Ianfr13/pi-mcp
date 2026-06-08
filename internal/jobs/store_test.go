@@ -128,6 +128,21 @@ func TestStore_MigratesLegacyJSON(t *testing.T) {
 	}
 }
 
+func TestStore_ForeignKeysPragmaOn(t *testing.T) {
+	s, err := OpenStore(tmpDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var fk int
+	if err := s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("PRAGMA foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys=%d want 1 (ON)", fk)
+	}
+}
+
 func TestStore_UpsertOwnerGuard(t *testing.T) {
 	s, err := OpenStore(tmpDB(t))
 	if err != nil {
