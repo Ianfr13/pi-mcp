@@ -13,7 +13,7 @@ func TestCancelRunningReadJobAbortsNoPrune(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("s")
 	fp := &fakePruner{}
-	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, &fakeCorrelator{}, fp)
 
 	rec, _ := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -38,7 +38,7 @@ func TestCancelRunningWriteJobPrunesWorktree(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("s")
 	fp := &fakePruner{}
-	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, &fakeCorrelator{}, fp)
 
 	rec, _ := r.Submit(context.Background(), Spec{Mode: model.ModeWrite, CWD: "/wt", RunsDir: "/wt/runs",
@@ -59,7 +59,7 @@ func TestCancelRunningWriteJobPrunesWorktree(t *testing.T) {
 func TestCancelQueuedJobAbortsWithoutLaunch(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("s")
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, &fakeCorrelator{}, &fakePruner{})
 
 	a, _ := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -87,7 +87,7 @@ func TestCancelQueuedJobAbortsWithoutLaunch(t *testing.T) {
 func TestCancelTerminalIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("s")
-	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, &fakeCorrelator{}, &fakePruner{})
 
 	rec, _ := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -110,7 +110,7 @@ func TestCancelTerminalIsIdempotent(t *testing.T) {
 func TestFinishDoesNotOverwriteAbortedOnCleanExit(t *testing.T) {
 	dir := t.TempDir()
 	cl := newCleanExitLauncher()
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		cl, &fakeCorrelator{}, &fakePruner{})
 
 	rec, _ := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -144,7 +144,7 @@ func TestFinishDoesNotOverwriteAbortedOnCleanExit(t *testing.T) {
 func TestAdmittedRunningJobHasNonNilCancel(t *testing.T) {
 	dir := t.TempDir()
 	bl := newBlockingWaitLauncher()
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		bl, &fakeCorrelator{}, &fakePruner{})
 
 	rec, _ := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -174,7 +174,7 @@ func TestAdmittedRunningJobHasNonNilCancel(t *testing.T) {
 // prune relocation: pre-relocation Cancel pruned recovered write jobs too.
 func TestCancelRecoveredRunningWriteJobPrunes(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
 	fresh := clock.Add(-time.Second) // within StaleThreshold -> recovered as running
 
@@ -183,12 +183,10 @@ func TestCancelRecoveredRunningWriteJobPrunes(t *testing.T) {
 			CWD: "/wt", RunsDir: "/wt/runs", WorktreePath: "/wt", Branch: "pi-mcp/job-rec-w",
 			StartedAt: fresh},
 	}
-	if err := persist(persistPath, prior); err != nil {
-		t.Fatalf("seed persist: %v", err)
-	}
+	seedDB(t, persistPath, prior, 0, "")
 
 	fp := &fakePruner{}
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"), &fakeCorrelator{}, fp)
 	if _, err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -217,7 +215,7 @@ func TestCancelRecoveredRunningWriteJobPrunes(t *testing.T) {
 
 func TestCancelUnknownJobErrors(t *testing.T) {
 	dir := t.TempDir()
-	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: filepath.Join(dir, "registry.db")},
 		newFakeLauncher("s"), &fakeCorrelator{}, &fakePruner{})
 	if _, err := r.Cancel("does-not-exist"); err == nil {
 		t.Fatal("expected error cancelling unknown job")

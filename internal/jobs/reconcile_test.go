@@ -11,6 +11,20 @@ import (
 	"pi-mcp/internal/model"
 )
 
+// seedDB seeds records into a SQLite DB at dbPath (creates it), using ownerPid
+// and ownerStartedAt for the ownership stamp. Use ownerPid=0 for "dead owner".
+func seedDB(t *testing.T, dbPath string, recs []model.JobRecord, ownerPid int, ownerStartedAt string) {
+	t.Helper()
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("seedDB OpenStore: %v", err)
+	}
+	defer s.Close()
+	if err := s.UpsertJobs(recs, ownerPid, ownerStartedAt); err != nil {
+		t.Fatalf("seedDB UpsertJobs: %v", err)
+	}
+}
+
 func writeWorktreeDir(t *testing.T, root, jobID string) string {
 	t.Helper()
 	p := filepath.Join(root, config.WorktreeSubdir, "job-"+jobID)
@@ -22,22 +36,20 @@ func writeWorktreeDir(t *testing.T, root, jobID string) string {
 
 func TestReconcileMarksStaleRunningFailed(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
 
-	// Persist a running job whose StartedAt is far in the past (post-restart, no
+	// Seed a running job whose StartedAt is far in the past (post-restart, no
 	// live updatedAt, so reconcile compares against StartedAt).
 	stale := clock.Add(-config.StaleThreshold - time.Hour)
 	prior := []model.JobRecord{
 		{JobID: "old", Status: model.JobRunning, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", PID: 2147483646, StartedAt: stale},
 	}
-	if err := persist(persistPath, prior); err != nil {
-		t.Fatalf("seed persist: %v", err)
-	}
+	seedDB(t, persistPath, prior, 0, "")
 
 	fp := &fakePruner{}
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"),
 		&fakeCorrelator{}, fp)
 
@@ -55,8 +67,8 @@ func TestReconcileMarksStaleRunningFailed(t *testing.T) {
 	if got.Status != model.JobFailed {
 		t.Fatalf("stale running should reconcile to failed, got %q", got.Status)
 	}
-	// Persisted file updated too.
-	recs, _ := loadPersisted(persistPath)
+	// Persisted DB updated too.
+	recs := readBackJobs(t, persistPath)
 	if recs[0].Status != model.JobFailed {
 		t.Fatalf("persisted reconciled status wrong: %q", recs[0].Status)
 	}
@@ -64,13 +76,13 @@ func TestReconcileMarksStaleRunningFailed(t *testing.T) {
 
 func TestReconcileKeepsTerminalRecords(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 	prior := []model.JobRecord{
 		{JobID: "done", Status: model.JobCompleted, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", StartedAt: time.Unix(1, 0)},
 	}
-	_ = persist(persistPath, prior)
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	seedDB(t, persistPath, prior, 0, "")
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return time.Unix(9_000_000, 0) }},
 		newFakeLauncher("s"), &fakeCorrelator{}, &fakePruner{})
 	if _, err := r.Reconcile(context.Background()); err != nil {
@@ -88,7 +100,7 @@ func TestReconcileKeepsTerminalRecords(t *testing.T) {
 // relaunched because Task/Context are not persisted) and is NOT kept live.
 func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
 	fresh := clock.Add(-time.Second) // stays running (not stale)
 
@@ -99,12 +111,10 @@ func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
 		{JobID: "q1", Status: model.JobQueued, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", StartedAt: fresh},
 	}
-	if err := persist(persistPath, prior); err != nil {
-		t.Fatalf("seed persist: %v", err)
-	}
+	seedDB(t, persistPath, prior, 0, "")
 
 	fc := &fakeCorrelator{table: map[string]string{"sess-1": "run-resolved"}}
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
 
 	if _, err := r.Reconcile(context.Background()); err != nil {
@@ -133,7 +143,7 @@ func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
 // correlator returns not-found keeps RunID "".
 func TestReconcileCorrelationGuards(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
 	fresh := clock.Add(-time.Second)
 
@@ -145,14 +155,12 @@ func TestReconcileCorrelationGuards(t *testing.T) {
 			CWD: "/p", RunsDir: "/p/runs", SessionID: "sess-b", RunID: "",
 			StartedAt: fresh},
 	}
-	if err := persist(persistPath, prior); err != nil {
-		t.Fatalf("seed persist: %v", err)
-	}
+	seedDB(t, persistPath, prior, 0, "")
 
 	// Correlator would resolve sess-a if consulted (it must NOT be), and returns
 	// not-found for sess-b.
 	fc := &fakeCorrelator{table: map[string]string{"sess-a": "should-not-apply"}}
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
 
 	if _, err := r.Reconcile(context.Background()); err != nil {
@@ -174,7 +182,7 @@ func TestReconcileCorrelationGuards(t *testing.T) {
 
 func TestReconcileGCsOrphanWorktrees(t *testing.T) {
 	dir := t.TempDir()
-	persistPath := filepath.Join(dir, "registry.json")
+	persistPath := filepath.Join(dir, "registry.db")
 
 	// Worktree on disk for a job that has NO record at all -> orphan -> pruned.
 	orphan := writeWorktreeDir(t, dir, "ghost")
@@ -191,10 +199,10 @@ func TestReconcileGCsOrphanWorktrees(t *testing.T) {
 			WorktreePath: liveWT, Branch: "pi-mcp/job-alive",
 			StartedAt: clock.Add(-time.Second)}, // fresh -> stays running
 	}
-	_ = persist(persistPath, prior)
+	seedDB(t, persistPath, prior, 0, "")
 
 	fp := &fakePruner{}
-	r := NewRegistry(Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"),
 		&fakeCorrelator{}, fp)
 	if _, err := r.Reconcile(context.Background()); err != nil {

@@ -46,12 +46,15 @@ type Registry struct {
 	// failure (cheap to retry); a failure WITH one is an execution failure (don't
 	// re-run the fleet). Injectable so tests decide deterministically.
 	hasRunFile func(runsDir string) bool
+
+	store          *regStore
+	ownerPid       int
+	ownerStartedAt string
 }
 
-// NewRegistry builds a Registry. cfg.Cap<=0 uses config.DefaultConcurrencyCap.
-// Dependency injection happens here: the app builds the real Launcher/
-// Correlator/Pruner and passes them in. There is no jobs.New / jobs.Options.
-func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) *Registry {
+// NewRegistry builds a Registry over a SQLite store at cfg.PersistPath. cfg.Cap<=0
+// uses config.DefaultConcurrencyCap. Returns an error if the store cannot open.
+func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, error) {
 	capN := cfg.Cap
 	if capN <= 0 {
 		capN = config.DefaultConcurrencyCap
@@ -60,18 +63,25 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) *Registry {
 	if now == nil {
 		now = time.Now
 	}
-	return &Registry{
-		jobs:         make(map[string]*Job),
-		slots:        make(chan struct{}, capN),
-		cap:          capN,
-		persistPath:  cfg.PersistPath,
-		worktreeRoot: cfg.WorktreeRoot,
-		now:          now,
-		launcher:     l,
-		correlator:   c,
-		pruner:       p,
-		hasRunFile:   runFileExists,
+	store, err := OpenStore(cfg.PersistPath)
+	if err != nil {
+		return nil, err
 	}
+	return &Registry{
+		jobs:           make(map[string]*Job),
+		slots:          make(chan struct{}, capN),
+		cap:            capN,
+		persistPath:    cfg.PersistPath,
+		worktreeRoot:   cfg.WorktreeRoot,
+		now:            now,
+		launcher:       l,
+		correlator:     c,
+		pruner:         p,
+		hasRunFile:     runFileExists,
+		store:          store,
+		ownerPid:       os.Getpid(),
+		ownerStartedAt: now().UTC().Format(time.RFC3339Nano),
+	}, nil
 }
 
 // recordsUnlocked returns persisted-shape records for all jobs. Caller holds mu.
@@ -83,12 +93,11 @@ func (r *Registry) recordsUnlocked() []model.JobRecord {
 	return out
 }
 
-// flushUnlocked persists the current registry. Caller holds mu. Persistence
-// errors are returned (callers log-and-continue; a launch never blocks on a
-// persistence error).
+// flushUnlocked persists THIS server's jobs (owner-stamped) to the shared DB.
+// It only upserts rows this server owns, so concurrent servers never clobber
+// each other. Caller holds mu.
 func (r *Registry) flushUnlocked() error {
-	// TODO(Task 3): replaced by store.UpsertJobs
-	return nil
+	return r.store.UpsertJobs(r.recordsUnlocked(), r.ownerPid, r.ownerStartedAt)
 }
 
 // Submit admits a new job if a slot is free (Status=running) or queues it
@@ -495,5 +504,6 @@ func (r *Registry) Close() error {
 	for _, c := range cancels {
 		c()
 	}
+	_ = r.store.Close()
 	return err
 }

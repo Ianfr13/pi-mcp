@@ -61,7 +61,7 @@ func TestCorrelateRetriesUntilRunFileAppears(t *testing.T) {
 	fl := newFakeLauncher("sess-late")
 	// Miss the first 3 lookups (the immediate one + 2 polls), then resolve.
 	corr := &lateCorrelator{failUntil: 3, runID: "run-xyz"}
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, corr, &fakePruner{})
 
 	rec, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
@@ -123,7 +123,7 @@ func TestCorrelateStopsWhenJobEndsWithoutRunFile(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("sess-none")
 	corr := &neverCorrelator{}
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		fl, corr, &fakePruner{})
 
 	rec, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})

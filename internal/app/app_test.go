@@ -15,10 +15,13 @@ import (
 
 func newTestRegistry(t *testing.T) *jobs.Registry {
 	t.Helper()
-	reg := jobs.NewRegistry(
-		jobs.Config{Cap: 4, PersistPath: t.TempDir() + "/r.json"},
+	reg, err := jobs.NewRegistry(
+		jobs.Config{Cap: 4, PersistPath: t.TempDir() + "/registry.db"},
 		noopLauncher{}, noopCorrelator{}, worktreePruner{},
 	)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 	t.Cleanup(func() { _ = reg.Close() })
 	return reg
 }

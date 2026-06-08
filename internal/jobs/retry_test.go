@@ -14,7 +14,7 @@ import (
 func TestAuthoringFailureRetriedThenSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	sl := &seqLauncher{waitErrs: []error{errFake, errFake, nil}} // fail, fail, succeed
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		sl, &fakeCorrelator{table: map[string]string{}}, &fakePruner{})
 	r.hasRunFile = func(string) bool { return false } // authoring failure (no run file) -> retry
 
@@ -38,7 +38,7 @@ func TestAuthoringFailureRetriedThenSucceeds(t *testing.T) {
 func TestAuthoringFailureExhaustsRetries(t *testing.T) {
 	dir := t.TempDir()
 	sl := &seqLauncher{waitErrs: []error{errFake, errFake, errFake, errFake}}
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		sl, &fakeCorrelator{table: map[string]string{}}, &fakePruner{})
 	r.hasRunFile = func(string) bool { return false } // never a run file -> retry to the cap
 
@@ -62,7 +62,7 @@ func TestAuthoringFailureExhaustsRetries(t *testing.T) {
 func TestExecutionFailureNotRetried(t *testing.T) {
 	dir := t.TempDir()
 	sl := &seqLauncher{waitErrs: []error{errFake, errFake, errFake}}
-	r := NewRegistry(Config{Cap: 1, PersistPath: filepath.Join(dir, "r.json")},
+	r := mustRegistry(t, Config{Cap: 1, PersistPath: filepath.Join(dir, "registry.db")},
 		sl, &fakeCorrelator{table: map[string]string{}}, &fakePruner{})
 	r.hasRunFile = func(string) bool { return true } // run file present -> execution failure
 

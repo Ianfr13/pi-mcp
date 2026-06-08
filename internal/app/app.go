@@ -103,7 +103,7 @@ func buildRegistryReal(Deps) (*jobs.Registry, error) {
 		realLauncher{},
 		realCorrelator{},
 		worktreePruner{},
-	), nil
+	)
 }
 
 // statePaths resolves the registry persist file and the worktree scan root under

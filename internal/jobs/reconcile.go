@@ -10,16 +10,20 @@ import (
 	"pi-mcp/internal/model"
 )
 
-// Reconcile rebuilds the in-memory registry from the persisted file after a
+// Reconcile rebuilds the in-memory registry from the SQLite store after a
 // restart, applies the post-restart liveness heuristic (running + stale ->
 // failed; PID is NOT trusted across restarts), GCs orphan worktrees
 // (<worktreeRoot>/<WorktreeSubdir>/job-* with no live, non-terminal record),
 // and returns the count of records loaded/reconciled. ctx is accepted for the
 // app seam (reconciliation is local I/O and does not block on it).
-// TODO(Task 3/4): replaced by owner-scoped reconcile using store.AllJobs.
+// TODO(Task 4): replace with owner-scoped reconcile (dead-owner only; atomic claim).
 func (r *Registry) Reconcile(ctx context.Context) (int, error) {
-	// Temporary stub: no records loaded until Task 3 wires the store.
-	records := []model.JobRecord{}
+	// Load all rows from the shared SQLite DB.
+	allRecs, _, err := r.store.AllJobs()
+	if err != nil {
+		return 0, err
+	}
+	records := allRecs
 	now := r.now()
 
 	r.mu.Lock()
