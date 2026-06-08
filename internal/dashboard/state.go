@@ -224,3 +224,7 @@ func rawToAny(raw json.RawMessage) any {
 	}
 	return v
 }
+
+// jsonMarshal is a thin wrapper so server.go need not import encoding/json
+// directly for one call.
+func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
