@@ -143,6 +143,33 @@ func TestStore_ForeignKeysPragmaOn(t *testing.T) {
 	}
 }
 
+func TestStore_MigrationQuarantinesCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "registry.db")
+	legacy := filepath.Join(dir, "registry.json")
+	if err := os.WriteFile(legacy, []byte("{ this is not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Migration runs inside OpenStore; a corrupt file is non-fatal (logged) and the
+	// store still opens.
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStore should not fail on corrupt legacy JSON: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("corrupt legacy file should be quarantined (renamed away), stat err=%v", err)
+	}
+	if _, err := os.Stat(legacy + ".corrupt"); err != nil {
+		t.Errorf("expected registry.json.corrupt quarantine file, err=%v", err)
+	}
+	recs, _, _ := s.AllJobs()
+	if len(recs) != 0 {
+		t.Errorf("corrupt migration must import nothing, got %+v", recs)
+	}
+}
+
 func TestStore_UpsertOwnerGuard(t *testing.T) {
 	s, err := OpenStore(tmpDB(t))
 	if err != nil {

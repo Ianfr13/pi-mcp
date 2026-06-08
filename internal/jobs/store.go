@@ -177,7 +177,10 @@ func (s *regStore) migrateLegacyJSON() error {
 		Jobs []model.JobRecord `json:"jobs"`
 	}
 	if err := json.Unmarshal(data, &pf); err != nil {
-		return fmt.Errorf("decode legacy: %w", err)
+		// Corrupt legacy file: quarantine it so we don't retry-and-fail every boot,
+		// then continue with an empty registry.
+		_ = os.Rename(legacy, legacy+".corrupt")
+		return fmt.Errorf("decode legacy (quarantined to %s.corrupt): %w", legacy, err)
 	}
 	// Terminalize any non-terminal legacy job before import: they belong to the
 	// pre-SQLite world and cannot be resumed here. Marking them terminal means
@@ -199,5 +202,11 @@ func (s *regStore) migrateLegacyJSON() error {
 			return fmt.Errorf("import legacy: %w", err)
 		}
 	}
-	return os.Rename(legacy, legacy+".migrated")
+	if err := os.Rename(legacy, legacy+".migrated"); err != nil {
+		if os.IsNotExist(err) {
+			return nil // a concurrent migrator already moved it — not an error
+		}
+		return err
+	}
+	return nil
 }
