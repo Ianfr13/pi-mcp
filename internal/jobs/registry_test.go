@@ -293,6 +293,35 @@ func TestSubmitPersistFailureRollsBack(t *testing.T) {
 	_ = fl
 }
 
+// TestClose_WaitsForTerminalFlush: Close() must not close the store until every
+// job goroutine has flushed its terminal state. With the bug, store.Close races
+// ahead of finish() and the terminal flush is lost — the persisted row is stuck at
+// "running". After the fix the persisted row is terminal (failed, killed by Close).
+func TestClose_WaitsForTerminalFlush(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "registry.db")
+	fl := newFakeLauncher("sess-Z")
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: dbPath}, fl, &fakeCorrelator{}, &fakePruner{})
+
+	rec, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	r.waitJob(rec.JobID)
+
+	recs := readBackJobs(t, dbPath)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 persisted row, got %d", len(recs))
+	}
+	if !isTerminal(recs[0].Status) {
+		t.Fatalf("Close must let the job goroutine flush its terminal state before closing the store; persisted status=%q (want terminal)", recs[0].Status)
+	}
+}
+
 func TestCloseCancelsRunningAndFlushes(t *testing.T) {
 	dir := t.TempDir()
 	fl := newFakeLauncher("sess-C")

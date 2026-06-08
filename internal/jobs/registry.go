@@ -36,6 +36,7 @@ type Registry struct {
 	worktreeRoot string
 	now          func() time.Time
 	closed       bool
+	wg           sync.WaitGroup // tracks runAttempts goroutines; Close waits on it before store.Close
 
 	launcher   Launcher
 	correlator Correlator
@@ -198,9 +199,18 @@ func (r *Registry) start(j *Job) {
 	}
 
 	r.mu.Lock()
+	if r.closed {
+		// Close() raced ahead: do not spawn a new job goroutine (its terminal flush
+		// could hit a closed store). The job is already flushed by Close; cancel its
+		// context so the just-launched pi process (group) is reaped.
+		r.mu.Unlock()
+		cancel()
+		return
+	}
 	j.Record.PID = pid
 	j.updatedAt = r.now()
 	_ = r.flushUnlocked()
+	r.wg.Add(1) // under mu, while !closed, so Close's Wait() observes every started goroutine
 	r.mu.Unlock()
 
 	go r.runAttempts(j, ctx, cancel, spec, sessionCh, wait)
@@ -214,6 +224,7 @@ func (r *Registry) start(j *Job) {
 // job. It calls finish() exactly once. sessionCh/wait belong to the current
 // attempt; the first pair comes from start().
 func (r *Registry) runAttempts(j *Job, ctx context.Context, cancel context.CancelFunc, spec Spec, sessionCh <-chan string, wait func() error) {
+	defer r.wg.Done()
 	for attempt := 0; ; attempt++ {
 		// Per-attempt correlate context: stops this attempt's poll without tearing
 		// down the job ctx (which a retry reuses for the next launch).
@@ -398,21 +409,26 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	}
 	var next *Job
 	if wasRunningSlot {
-		// Free the slot, then promote the next queued job (reuse the same slot).
+		// Free the slot.
 		select {
 		case <-r.slots:
 		default:
 		}
-		next = r.dequeueUnlocked()
-		if next != nil {
-			select {
-			case r.slots <- struct{}{}:
-				r.startingUnlocked(next)
-			default:
-				// Should not happen (we just freed one); requeue defensively.
-				next.markUnlocked(model.JobQueued, r.now())
-				r.queue = append([]*Job{next}, r.queue...)
-				next = nil
+		// Do NOT promote a queued job once Close has begun: a goroutine started here
+		// (via r.start(next) below) could flush after store.Close(). Queued jobs are
+		// left for the next server's reconcile.
+		if !r.closed {
+			next = r.dequeueUnlocked()
+			if next != nil {
+				select {
+				case r.slots <- struct{}{}:
+					r.startingUnlocked(next)
+				default:
+					// Should not happen (we just freed one); requeue defensively.
+					next.markUnlocked(model.JobQueued, r.now())
+					r.queue = append([]*Job{next}, r.queue...)
+					next = nil
+				}
 			}
 		}
 	}
@@ -504,6 +520,7 @@ func (r *Registry) Close() error {
 	for _, c := range cancels {
 		c()
 	}
+	r.wg.Wait() // every job goroutine has now flushed its terminal state; safe to close the store
 	_ = r.store.Close()
 	return err
 }
