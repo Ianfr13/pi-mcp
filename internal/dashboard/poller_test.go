@@ -19,7 +19,8 @@ func (c *captureSink) count() int       { c.mu.Lock(); defer c.mu.Unlock(); retu
 func TestPoller_TickBroadcastsOnChange(t *testing.T) {
 	recs := recsForTest()
 	sink := &captureSink{}
-	p := NewPoller("testdata/registry.json", "/state", sink)
+	p := NewPoller("unused.db", "/state", sink)
+	p.readRegistry = func(string) ([]model.JobRecord, error) { return recs, nil }
 	p.now = func() time.Time { return nowFresh }
 
 	p.Tick() // first build -> broadcast
@@ -30,7 +31,6 @@ func TestPoller_TickBroadcastsOnChange(t *testing.T) {
 	if sink.count() != 1 {
 		t.Errorf("unchanged tick must not broadcast, got %d", sink.count())
 	}
-	_ = recs
 }
 
 func TestPoller_LatestState(t *testing.T) {
