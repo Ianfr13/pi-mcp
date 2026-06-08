@@ -10,6 +10,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"pi-mcp/internal/config"
 	"pi-mcp/internal/model"
 )
 
@@ -176,6 +177,21 @@ func (s *regStore) migrateLegacyJSON() error {
 	}
 	if err := json.Unmarshal(data, &pf); err != nil {
 		return fmt.Errorf("decode legacy: %w", err)
+	}
+	// Terminalize any non-terminal legacy job before import: they belong to the
+	// pre-SQLite world and cannot be resumed here. Marking them terminal means
+	// reconcile will NOT prune their worktrees — which, during a rollout, may still
+	// belong to a live old-binary server. Migration must never destroy live work.
+	for i := range pf.Jobs {
+		switch pf.Jobs[i].Status {
+		case model.JobCompleted, model.JobFailed, model.JobAborted:
+			// already terminal — keep as-is
+		default:
+			pf.Jobs[i].Status = model.JobFailed
+			if pf.Jobs[i].ErrorCode == "" {
+				pf.Jobs[i].ErrorCode = config.ErrServerRestarted
+			}
+		}
 	}
 	if len(pf.Jobs) > 0 {
 		if err := s.UpsertJobs(pf.Jobs, 0, ""); err != nil { // ownerPid 0 == dead owner

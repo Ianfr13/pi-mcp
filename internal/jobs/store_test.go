@@ -115,6 +115,11 @@ func TestStore_MigratesLegacyJSON(t *testing.T) {
 	if len(recs) != 1 || recs[0].JobID != "old1" {
 		t.Errorf("legacy import failed: %+v", recs)
 	}
+	// non-destructive migration: a legacy non-terminal ("running") job is imported
+	// as terminal (failed) so reconcile never prunes its (possibly live) worktree.
+	if string(recs[0].Status) != "failed" {
+		t.Errorf("legacy running job should import as failed, got %q", recs[0].Status)
+	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Errorf("legacy registry.json should be renamed away, stat err=%v", err)
 	}
