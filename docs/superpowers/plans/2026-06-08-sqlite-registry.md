@@ -946,6 +946,9 @@ func TestRenderPrompt_IncludesAgentTimeout(t *testing.T) {
 	if !strings.Contains(out, "1200000") {
 		t.Errorf("prompt missing the 20-min timeout value:\n%s", out)
 	}
+	if !strings.Contains(out, "tokenBudget") || !strings.Contains(out, "2000000000") {
+		t.Errorf("prompt missing the explicit large tokenBudget directive:\n%s", out)
+	}
 }
 ```
 (Ensure `"strings"` is imported in prompt_test.go.)
@@ -962,9 +965,9 @@ In `internal/config/config.go`, edit `ForcingPromptTemplate` — add one sentenc
 const ForcingPromptTemplate = `You MUST make exactly ONE call to the ` + "`workflow`" + ` tool with background:false. Do not answer
 directly. Do not use background:true. Return the final synthesized result INLINE this turn.
 Decompose the task as you see fit and fan out subagents in parallel.
-Run the workflow to completion with NO token budget: do NOT pass tokenBudget to the workflow
-tool (leave it unlimited) and do NOT set per-phase budgets — never stop or throttle the run for
-token or cost reasons.
+Run the workflow to completion without throttling: pass tokenBudget:2000000000 (effectively
+unlimited) to the workflow tool and do NOT set per-phase budgets — never stop or throttle the run
+for token or cost reasons. Pass the large value EXPLICITLY; do not rely on omitting it.
 Give agents room to finish: pass agentTimeoutMs:1200000 (20 minutes) to the workflow tool so
 coding/TDD agents are not killed by the 5-minute default per-agent timeout.
 The workflow MUST return an object matching exactly this JSON shape:
