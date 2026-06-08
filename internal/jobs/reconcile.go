@@ -16,11 +16,10 @@ import (
 // (<worktreeRoot>/<WorktreeSubdir>/job-* with no live, non-terminal record),
 // and returns the count of records loaded/reconciled. ctx is accepted for the
 // app seam (reconciliation is local I/O and does not block on it).
+// TODO(Task 3/4): replaced by owner-scoped reconcile using store.AllJobs.
 func (r *Registry) Reconcile(ctx context.Context) (int, error) {
-	records, err := loadPersisted(r.persistPath)
-	if err != nil {
-		return 0, err
-	}
+	// Temporary stub: no records loaded until Task 3 wires the store.
+	records := []model.JobRecord{}
 	now := r.now()
 
 	r.mu.Lock()

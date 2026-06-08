@@ -1,5 +1,10 @@
 package jobs
 
+// persist_compat.go holds the legacy JSON persistence helpers that are
+// still referenced by existing tests and reconcile.go.
+// TODO(Task 3): delete this file once registry.go and all test files
+// are migrated to use the SQLite store.
+
 import (
 	"encoding/json"
 	"errors"
@@ -10,7 +15,7 @@ import (
 	"pi-mcp/internal/model"
 )
 
-// persistedFile is the on-disk shape of the registry.
+// persistedFile is the on-disk shape of the legacy JSON registry.
 type persistedFile struct {
 	Jobs []model.JobRecord `json:"jobs"`
 }

@@ -87,7 +87,8 @@ func (r *Registry) recordsUnlocked() []model.JobRecord {
 // errors are returned (callers log-and-continue; a launch never blocks on a
 // persistence error).
 func (r *Registry) flushUnlocked() error {
-	return persist(r.persistPath, r.recordsUnlocked())
+	// TODO(Task 3): replaced by store.UpsertJobs
+	return nil
 }
 
 // Submit admits a new job if a slot is free (Status=running) or queues it
