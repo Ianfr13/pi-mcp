@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -192,5 +193,46 @@ func TestSpawnNilStderr(t *testing.T) {
 		Stderr: nil,
 	}); err == nil {
 		t.Fatal("expected error for nil stderr, got nil")
+	}
+}
+
+func TestSpawnNewProcessGroup(t *testing.T) {
+	installFakePi(t)
+	workdir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// __HANG__ keeps the fake pi alive so we can inspect its process group.
+	proc, err := Spawn(ctx, SpawnConfig{
+		Prompt: "ignored __HANG__ token",
+		CWD:    workdir,
+		Stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	pid := proc.PID()
+	if pid <= 0 {
+		t.Fatalf("bad pid %d", pid)
+	}
+	// Setpgid makes the child its own process-group leader: pgid == pid. Without
+	// it the child inherits the test runner's group (pgid != pid).
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatalf("Getpgid(%d): %v", pid, err)
+	}
+	if pgid != pid {
+		t.Errorf("child not in its own process group: pgid=%d pid=%d", pgid, pid)
+	}
+
+	// Cancel must group-kill and let Wait return promptly.
+	cancel()
+	go func() { _, _ = io.ReadAll(proc.Stdout) }()
+	done := make(chan struct{})
+	go func() { _ = proc.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("group kill did not terminate the process within 10s")
 	}
 }
