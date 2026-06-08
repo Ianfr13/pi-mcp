@@ -15,12 +15,12 @@ func TestBuildArgv(t *testing.T) {
 		{
 			name:           "no context-files flag when false",
 			noContextFiles: false,
-			want:           []string{"pi", "-p", "--mode", "json", "--no-session", "THE PROMPT\nwith newline"},
+			want:           []string{"pi", "-p", "--mode", "json", "--no-session", "--model", "openai-codex/gpt-5.5", "--thinking", "high", "THE PROMPT\nwith newline"},
 		},
 		{
 			name:           "context-files flag when true",
 			noContextFiles: true,
-			want:           []string{"pi", "-p", "--mode", "json", "--no-session", "--no-context-files", "THE PROMPT\nwith newline"},
+			want:           []string{"pi", "-p", "--mode", "json", "--no-session", "--model", "openai-codex/gpt-5.5", "--thinking", "high", "--no-context-files", "THE PROMPT\nwith newline"},
 		},
 	}
 	for _, tt := range tests {
@@ -40,5 +40,31 @@ func TestBuildArgvPromptIsSingleElement(t *testing.T) {
 	last := got[len(got)-1]
 	if last != prompt {
 		t.Fatalf("prompt not preserved as single argv element\n got: %q\nwant: %q", last, prompt)
+	}
+}
+
+// pi-mcp pins a strong orchestrator (script-author) model so the workflow script
+// is valid JS; the flag must be present and precede the positional prompt.
+func TestBuildArgvPinsOrchestratorModel(t *testing.T) {
+	got := BuildArgv("p", false)
+	var mi, ti, pi = -1, -1, -1
+	for i, a := range got {
+		switch a {
+		case "--model":
+			mi = i
+		case "--thinking":
+			ti = i
+		case "p":
+			pi = i
+		}
+	}
+	if mi < 0 || got[mi+1] != "openai-codex/gpt-5.5" {
+		t.Fatalf("expected --model openai-codex/gpt-5.5, got %#v", got)
+	}
+	if ti < 0 || got[ti+1] != "high" {
+		t.Fatalf("expected --thinking high, got %#v", got)
+	}
+	if !(mi < pi && ti < pi) {
+		t.Fatalf("model/thinking flags must precede the prompt, got %#v", got)
 	}
 }

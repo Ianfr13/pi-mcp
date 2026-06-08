@@ -36,6 +36,17 @@ const (
 // the runner based on config; default ON for code tasks per §4).
 var PiBaseFlags = []string{"-p", "--mode", "json", "--no-session"}
 
+// OrchestratorModel / OrchestratorThinking pin the model+effort of the pi agent
+// that AUTHORS the workflow script. pi-mcp forces a strong author because a weak
+// default (the user's ~/.pi defaultModel) can emit syntactically-invalid workflow
+// JavaScript ("Unexpected token") that fails the whole run before any agent runs.
+// This pins ONLY the orchestrator/author — pi still owns the FLEET's per-agent
+// model selection via ~/.pi/workflows/model-tiers.json.
+const (
+	OrchestratorModel    = "openai-codex/gpt-5.5"
+	OrchestratorThinking = "high"
+)
+
 // DefaultNoContextFiles: when true, the runner appends NoContextFilesFlag.
 // Spec §4: default ON for code tasks (lets pi see AGENTS.md/CLAUDE.md). Note the
 // flag literally DISABLES context files, so "default see project files" == do NOT
