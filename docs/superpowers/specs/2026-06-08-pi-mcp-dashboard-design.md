@@ -37,8 +37,12 @@ never writes to any pi-mcp/pi file and never mutates a running job (read-only).
 | 7 | SSE payload | **Light list** over SSE; heavy detail via `GET /api/job/{id}` on demand |
 | 8 | Decomposition view | **Fleet only** (no authored-script viewer, no logs panel) |
 | 9 | Result rendering | **§5.4 structured contract** view (+ minimal raw fallback for degenerate shapes) |
-| 10 | Exposure | Bind **directly to the Tailscale IP** (auto-detect; `--addr` override; fail-fast if no tailnet) |
-| 11 | Deploy | **systemd** unit (runs as the user, shares HOME/env with pi-mcp) |
+| 10 | Exposure | Bind **directly to the Tailscale IP** (detect via `tailscale ip -4`; `--addr` override; **wait-for-tailnet** with backoff, never fall back to LAN) |
+| 11 | Deploy | **systemd user unit** + `loginctl enable-linger` (runs as the user, shares HOME/env with pi-mcp) |
+| 12 | Landing / no selection | **Aggregated overview** (counters + recent/active mini-list); no charts |
+| 13 | Write jobs | Treated **same as read** (fleet + structured result; no delivery panel, no git exec) |
+| 14 | Port | 7777 (`--addr` overrides) → `http://100.x.y.z:7777` |
+| 15 | Theme | **Light/white, airy cards** (soft shadow, rounded; color only on status) |
 
 ---
 
@@ -212,7 +216,12 @@ drift:
 
 ---
 
-## 7. UI (mission-control, dark, dense)
+## 7. UI (light/white, airy cards)
+
+**Theme:** light/white background, dark text, **color only on status** (blue =
+running, green = done, amber = queued, red = failed). Airy cards with a soft
+shadow and rounded corners (Linear/Notion-light vibe); monospace for numeric
+fields. Same structure regardless of density: top bar + left rail + central panel.
 
 - **Top bar:** title `pi-mcp · control plane`; counts `LIVE n · QUEUED n · DONE n
   · FAILED n`; SSE connection dot (connected / reconnecting); state-dir path.
@@ -222,20 +231,28 @@ drift:
     `Σ <n>k tok` live.
   - **HISTORY** (terminal, time-window filtered 24h/7d/all): rows — status icon,
     agent count, model chips, total tokens, cost `$`, duration, completedAt.
+- **Main panel — landing / no selection:** an **aggregated overview** — the big
+  counters (running/queued/done/failed) plus a compact mini-list of the most
+  recent/active jobs as quick-entry. Derived client-side from the light state
+  (no extra endpoint). **No charts** (analytics stays out of scope).
 - **Main panel (on select):**
   - Header: jobId, mode, status, cwd (or worktree+branch), runId, elapsed/duration.
   - **Blind window:** "✍ orchestrator authoring workflow… (no run file yet)".
   - **Fleet grid:** one card per agent — model badge, label, phase, status
-    (spinner / ✓ / ✗), tokens, timing, `agents[].prompt` + result preview
-    (expand → full journal result via the on-demand detail).
+    (spinner / ✓ / ✗), tokens, timing, `agents[].prompt` (truncated/collapsed by
+    default, expand for full) + result preview (expand → full journal result via
+    the on-demand detail).
   - **Phase timeline:** `phases[]` with `currentPhase` highlighted.
   - **Footer:** token usage (input/output/cache), total cost, duration.
   - **Result:** §5.4 structured contract (read: `summary`, `findings[]` with
     severity, `confidence`, `open_questions[]`; write: `summary`,
     `files_changed[]`, `diff_summary`, `tests_run`, `notes`). Degenerate /
     off-contract result → small "resultado fora do contrato" with the raw value
-    (never a blank panel).
+    (never a blank panel). **Write jobs are treated the same as read** — the
+    write contract fields render here; there is no separate delivery panel and no
+    live `git` execution.
   - **Error:** `errorCode` + message for failed/aborted.
+  - Timestamps render in the **browser's timezone** (relative, with absolute on hover).
 - **Realtime:** `EventSource('/events')` replaces the light state and re-renders,
   **preserving selection and scroll**. When the selected job is **live**, the
   browser re-fetches `GET /api/job/{id}` on each list tick; when **terminal**, it
@@ -247,17 +264,26 @@ drift:
 ## 8. Exposure & deploy
 
 ### 8.1 Bind
-Default: auto-detect the host's Tailscale IPv4 (`tailscale ip -4`, or the
-`100.64.0.0/10` CGNAT interface) and bind `<tailscale-ip>:7777`. `--addr`
-overrides. **Fail fast** if no tailnet address is found and no `--addr` given (so
-it never silently falls back to LAN/public). HTTP plain on the tailnet; no
-app-level auth — **tailnet membership is the security boundary**.
+Default: detect the host's Tailscale IPv4 by shelling `tailscale ip -4` and bind
+`<tailscale-ip>:7777`. Because a systemd **user unit** has a minimal PATH, the
+detector tries `tailscale` on PATH and falls back to common absolute locations
+(`/usr/bin/tailscale`, `/usr/local/bin/tailscale`); the unit also sets
+`Environment=PATH=` to include the CLI's dir. **Wait-for-tailnet:** if no tailnet
+IP is found yet (tailscaled still coming up at boot), poll with backoff
+(logging "waiting for tailnet IP…") and bind once `100.x` appears — it **never**
+falls back to a LAN/public interface. `--addr <ip:port>` overrides detection and
+binds immediately (no waiting). HTTP plain on the tailnet; no app-level auth —
+**tailnet membership is the security boundary**.
 
-### 8.2 systemd
-A `pi-dashboard.service` unit: runs as the user (same `HOME`/env as the pi-mcp
-server so `registry.json` resolves identically), `Restart=always`,
-`WantedBy=multi-user.target`. Installed via `systemctl --user enable --now` (or
-system unit with `User=`). `ExecStart=/usr/local/bin/pi-dashboard`.
+### 8.2 systemd (user unit)
+A `pi-dashboard.service` **user unit** at `~/.config/systemd/user/`: runs in the
+user's own context (so `HOME`/env match the pi-mcp server and `registry.json`
+resolves identically), `Restart=always`, `Environment=PATH=…` (to find the
+`tailscale` CLI), `WantedBy=default.target`,
+`ExecStart=/usr/local/bin/pi-dashboard`. Enabled with
+`systemctl --user enable --now pi-dashboard`; `loginctl enable-linger <user>` so
+it starts at boot and survives logout (no root required). Logs go to stderr →
+the user journal (`journalctl --user -u pi-dashboard`).
 
 ---
 
@@ -271,7 +297,8 @@ system unit with `User=`). `ExecStart=/usr/local/bin/pi-dashboard`.
 | Blind window (runId empty / file absent) | Show job as "authoring…", no fleet yet |
 | Result off-contract / non-object | Show raw value under "resultado fora do contrato" |
 | SSE client disconnect | Hub drops the client; no leak |
-| No tailnet address & no `--addr` | Fail fast with a clear message |
+| No tailnet address & no `--addr` (boot race) | Wait/retry with backoff (log "waiting for tailnet IP…"); never fall back to LAN |
+| `tailscale` CLI not on PATH | Try common absolute paths; unit sets `Environment=PATH=` |
 | Port in use | Fail fast with a clear message |
 
 The dashboard **never writes** to any pi-mcp/pi file (read-only guarantee).
@@ -305,7 +332,8 @@ systemd; structured §5.4 result view.
 
 **Out (v1):** auth (tailnet is the boundary); DB / extra retention (run files are
 the store); control actions (cancel/launch); charts/analytics; authored-script &
-logs viewer; orphan run files not in the registry; `fsnotify`; Docker.
+logs viewer; write-delivery panel / live `git` diff; orphan run files not in the
+registry; `fsnotify`; Docker; system-level systemd unit (user unit only).
 
 ---
 
@@ -321,5 +349,5 @@ internal/dashboard/
   liveness.go                       # (or shared helper) status derivation reuse
   web/index.html  web/app.js  web/app.css
 internal/config (or new shared)     # exported state-path resolution
-deploy/pi-dashboard.service         # systemd unit
+deploy/pi-dashboard.service         # systemd USER unit (~/.config/systemd/user/)
 ```
