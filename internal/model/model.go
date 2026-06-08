@@ -73,6 +73,25 @@ type TokenUsage struct {
 	CacheWrite int64   `json:"cacheWrite"`
 }
 
+// AuthoringInfo is a blind-window authoring snapshot: a live tail of the
+// orchestrator's streamed plan and reasoning, persisted to
+// <runsDir>/<jobID>.authoring while the orchestrator is still authoring the
+// workflow script. All fields are scalar/string so the value is MCP-safe (no
+// nested objects, no maps). JobID/Model are echoed for cross-referencing the
+// source job; Chars is the live count of the underlying assistant text (pre-
+// truncation), Preview is the UTF-8-safe tail truncated to
+// config.MaxAuthoringPreviewBytes, Done flips to true the moment the orchestrator
+// calls the `workflow` tool (after which the observer keeps draining to EOF —
+// the value is read-once, the writer is fire-and-forget).
+type AuthoringInfo struct {
+	JobID     string `json:"jobId"`
+	Model     string `json:"model"`
+	Chars     int    `json:"chars"`
+	Preview   string `json:"preview,omitempty"`
+	Done      bool   `json:"done"`
+	UpdatedAt string `json:"updatedAt"` // RFC3339Nano UTC
+}
+
 // ---------- pi --mode json stream events (§7) ----------
 // Line-delimited JSON; switch on .Type; ignore unknown types.
 
@@ -229,6 +248,7 @@ type StatusOutput struct {
 	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
 	Write        *WriteInfo           `json:"write,omitempty"`    // iff write
 	Progress     *Progress            `json:"progress,omitempty"` // heartbeat for non-terminal jobs (elapsed + worktree activity)
+	Authoring    *AuthoringInfo       `json:"authoring,omitempty"` // live authoring preview, populated in the blind window
 	Error        string               `json:"error,omitempty"`    // failed/aborted message
 }
 

@@ -81,6 +81,14 @@ const RunsDirRel = ".pi/workflows/runs"
 // Intermediate/journal results larger than this are returned as preview+truncated.
 const MaxInlineResultBytes = 16 * 1024
 
+// ---- blind-window authoring preview (Task 1) ----
+// MaxAuthoringPreviewBytes caps the live authoring preview written to
+// <runsDir>/<jobID>.authoring. The watcher is in-memory only; only the latest
+// tail is persisted, so a 6 KiB cap is plenty for a "what is the orchestrator
+// thinking?" hint while still leaving room for several KB of free-form text
+// even after UTF-8 tail-truncation.
+const MaxAuthoringPreviewBytes = 6 * 1024
+
 // ---- forcing prompt (§4.2) ----
 // Source of truth: docs/research/fixtures/sample-forced-workflow-prompt.txt.
 // Placeholders: {{CONTRACT}} (read|write skeleton, §5.4), {{TASK}}, {{CONTEXT}}.
