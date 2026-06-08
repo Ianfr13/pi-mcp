@@ -1,0 +1,15 @@
+[Unit]
+Description=pi-mcp control-plane dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pi-dashboard
+# user units have a minimal PATH; ensure the tailscale CLI is findable.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
