@@ -163,7 +163,15 @@ func StateDir() string {
 	return os.TempDir()
 }
 
-// RegistryPath is the SQLite job-registry DB: <StateDir>/pi-mcp/registry.db.
+// RegistryPathFor returns the SQLite registry DB path under an explicit state
+// dir: <stateDir>/pi-mcp/registry.db. Any caller honoring a custom --state-dir
+// MUST use this — never hand-build "registry.json" (the canonical registry is
+// the .db; a .json path yields an empty/split-brain reader).
+func RegistryPathFor(stateDir string) string {
+	return filepath.Join(stateDir, "pi-mcp", "registry.db")
+}
+
+// RegistryPath is the SQLite job-registry DB under the default state dir.
 func RegistryPath() string {
-	return filepath.Join(StateDir(), "pi-mcp", "registry.db")
+	return RegistryPathFor(StateDir())
 }

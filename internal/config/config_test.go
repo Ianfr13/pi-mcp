@@ -128,3 +128,10 @@ func TestRegistryPath(t *testing.T) {
 		t.Errorf("RegistryPath()=%q want %q", got, want)
 	}
 }
+
+func TestRegistryPathFor(t *testing.T) {
+	want := "/custom/pi-mcp/registry.db"
+	if got := RegistryPathFor("/custom"); got != want {
+		t.Errorf("RegistryPathFor(/custom)=%q want %q", got, want)
+	}
+}
