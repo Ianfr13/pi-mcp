@@ -244,3 +244,20 @@ func TestScanWorktreeActivity_GitPointerFileSkipped(t *testing.T) {
 		t.Fatalf("newest mtime must ignore the .git pointer's future time, got %v want %v", newest, base)
 	}
 }
+
+// scanWorktreeActivity counts regular files only; a symlink (non-regular) must
+// not inflate the count nor (via its lstat time) drive the liveness mtime.
+func TestScanWorktreeActivity_IgnoresSymlinks(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real.go")
+	if err := os.WriteFile(real, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(root, "link.go")); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+	files, _ := scanWorktreeActivity(root)
+	if files != 1 {
+		t.Fatalf("symlink must not be counted as a file, got %d (want 1)", files)
+	}
+}

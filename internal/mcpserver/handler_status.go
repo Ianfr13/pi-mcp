@@ -132,14 +132,15 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 
 	// Non-mutating worktree liveness/progress (write jobs only): a write job that
 	// edits files directly leaves the run file frozen while it works, so a recently
-	// modified worktree is the authoritative "still alive" signal. A future mtime
-	// (clock skew on a networked FS) is even more recent, so age<=threshold —
-	// including a negative age — counts as active rather than re-triggering staleness.
+	// modified worktree is the authoritative "still alive" signal. The mtime must be
+	// within +/- StaleThreshold of now: a small future mtime is plausible clock skew
+	// (networked FS / container drift) and still counts as activity, but a mtime far
+	// in the future is corrupt, not liveness, and must not mask a wedged job.
 	wtFiles, wtLast, wtOK := 0, time.Time{}, false
 	if tgt.mode == model.ModeWrite && tgt.hasJob {
 		wtFiles, wtLast, wtOK = s.jobs.WorktreeActivity(tgt.jobID)
 	}
-	worktreeActive := wtOK && now.Sub(wtLast) <= config.StaleThreshold
+	worktreeActive := wtOK && now.Sub(wtLast).Abs() <= config.StaleThreshold
 
 	run, err := s.store.Load(tgt.runsDir, tgt.runID)
 	if err != nil {

@@ -514,6 +514,37 @@ func TestStatus_WriteFutureMtimeStaysRunningAndClamps(t *testing.T) {
 	}
 }
 
+// A far-future worktree mtime (corrupt timestamp / a restored file dated years
+// ahead) is NOT plausible clock skew and must not be trusted as liveness — else a
+// genuinely wedged job (stale run file) would read "running" forever. Only a mtime
+// within +/- StaleThreshold of now counts as activity.
+func TestStatus_WriteFarFutureMtimeDoesNotMaskWedge(t *testing.T) {
+	now := mustTime("2026-06-08T12:00:00Z")
+	staleUpd := now.Add(-(config.StaleThreshold + time.Minute))
+
+	run := buildRun()
+	run.Status = "running"
+	run.Result = nil
+	run.TokenUsage = nil
+	run.UpdatedAt = &staleUpd
+
+	j := newFakeJobs()
+	j.lookup["job-ff"] = model.JobRecord{
+		JobID: "job-ff", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeWrite, PID: 1,
+		Status: model.JobRunning, WorktreePath: "/wt/job-ff", Branch: "b", StartedAt: now.Add(-20 * time.Minute),
+	}
+	j.activity["job-ff"] = wtActivity{files: 5, lastModified: now.Add(48 * time.Hour), ok: true} // absurd future
+	store := newFakeStore()
+	store.runs["/runs/"+run.RunID] = run
+	srv := New(j, store)
+	srv.now = func() time.Time { return now }
+
+	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ff"})
+	if out.Status != "failed" {
+		t.Fatalf("far-future mtime must not mask a wedged job, got %q", out.Status)
+	}
+}
+
 func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
 	// A write job whose run file is stale AND whose worktree is NOT changing is
 	// genuinely wedged/dead -> staleness still applies (no false liveness).

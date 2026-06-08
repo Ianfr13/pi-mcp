@@ -141,18 +141,17 @@ func (a *jobsAdapter) WorktreeActivity(jobID string) (int, time.Time, bool) {
 	return files, newest, true
 }
 
-// maxWorktreeScan backstops the walk so a pathological worktree (e.g. an agent
-// that ran a dependency install) can never turn a status poll into an unbounded
-// scan. No realistic code worktree approaches it.
-const maxWorktreeScan = 200000
-
 // scanWorktreeActivity counts regular files under root and returns the newest
 // mtime, skipping the .git and .pi bookkeeping entries (which churn independently
 // of the agent's work). NOTE: pi-mcp creates a LINKED git worktree, where .git is
 // a FILE (a gitdir pointer), not a dir — so the skip matches both. The count is
-// "files present in the checkout + the agent's additions", not agent-only.
-// Errors are swallowed: a partial walk still yields a useful liveness signal, and
-// a missing worktree simply yields (0, zero time).
+// "files present in the checkout + the agent's additions", not agent-only. The
+// walk is NOT bounded by a file cap: the newest mtime is the liveness signal, so
+// it must observe every file (a cap could miss the freshest write and false-fail a
+// live job). It is a stat-only read; cost is O(files) but worktrees are project-
+// sized. Errors are swallowed: a partial walk still yields a useful signal, and a
+// missing worktree simply yields (0, zero time). Symlinks/non-regular entries are
+// not counted (their lstat mtime is not the agent's work).
 func scanWorktreeActivity(root string) (files int, newest time.Time) {
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -165,8 +164,8 @@ func scanWorktreeActivity(root string) (files int, newest time.Time) {
 			}
 			return nil
 		}
-		if d.IsDir() {
-			return nil
+		if !d.Type().IsRegular() {
+			return nil // dirs, symlinks, devices, sockets: not counted
 		}
 		info, ierr := d.Info()
 		if ierr != nil {
@@ -175,9 +174,6 @@ func scanWorktreeActivity(root string) (files int, newest time.Time) {
 		files++
 		if info.ModTime().After(newest) {
 			newest = info.ModTime()
-		}
-		if files >= maxWorktreeScan {
-			return filepath.SkipAll // backstop; count/newest are best-effort beyond this
 		}
 		return nil
 	})
