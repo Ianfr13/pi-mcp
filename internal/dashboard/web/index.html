@@ -7,28 +7,37 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <span class="brand">pi-mcp <span class="muted">· control plane</span></span>
-    <span class="counts" id="counts"></span>
-    <span class="conn" id="conn" title="connection">●</span>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">π</span>
+      <span class="title">pi-mcp<span class="dim"> · control plane</span></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="topright">
+      <span class="statedir" id="statedir"></span>
+      <span class="conn" id="conn"><i></i><span id="conntxt">connecting…</span></span>
+    </div>
   </header>
+
   <main class="layout">
     <aside class="rail">
-      <section>
-        <h2>Live</h2>
-        <div id="live" class="list"></div>
-      </section>
-      <section>
-        <h2>History
-          <span class="filter" id="filter">
+      <div class="railsec">
+        <div class="railhead"><span class="rh-title">Live</span><span class="badge" id="livecount">0</span></div>
+        <div id="live" class="cards"></div>
+      </div>
+      <div class="railsec grow">
+        <div class="railhead">
+          <span class="rh-title">History</span>
+          <div class="seg" id="filter">
             <button data-w="24h" class="on">24h</button><button data-w="7d">7d</button><button data-w="all">all</button>
-          </span>
-        </h2>
-        <div id="history" class="list"></div>
-      </section>
+          </div>
+        </div>
+        <div id="history" class="cards"></div>
+      </div>
     </aside>
     <section class="panel" id="panel"></section>
   </main>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
