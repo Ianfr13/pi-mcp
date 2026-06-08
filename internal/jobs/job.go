@@ -23,6 +23,7 @@ type Spec struct {
 	Context       string // optional extra context
 	Worktree      string // write mode only
 	Branch        string // write mode only
+	JobID         string // the JobRecord's JobID; carried so the Launcher can write <runsDir>/<jobID>.authoring during the blind window
 	PreassignedID string // when non-empty, NewJob uses this as JobID instead of minting
 }
 

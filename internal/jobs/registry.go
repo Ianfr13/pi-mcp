@@ -176,6 +176,7 @@ func (r *Registry) start(j *Job) {
 		Context:  j.context,
 		Worktree: j.Record.WorktreePath,
 		Branch:   j.Record.Branch,
+		JobID:    j.Record.JobID,
 	}
 	r.mu.Unlock()
 
