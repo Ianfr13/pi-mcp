@@ -127,3 +127,40 @@ func TestStore_MigratesLegacyJSON(t *testing.T) {
 		t.Errorf("expected registry.json.migrated, err=%v", err)
 	}
 }
+
+func TestStore_UpsertOwnerGuard(t *testing.T) {
+	s, err := OpenStore(tmpDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.UpsertJobs([]model.JobRecord{rec("x", "running")}, 1, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	// A FOREIGN owner (pid 2) must NOT clobber pid 1's live row.
+	if err := s.UpsertJobs([]model.JobRecord{rec("x", "completed")}, 2, "t2"); err != nil {
+		t.Fatalf("foreign upsert should be a silent no-op, not an error: %v", err)
+	}
+	recs, owners, err := s.AllJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("want 1 row, got %d", len(recs))
+	}
+	if string(recs[0].Status) != "running" {
+		t.Errorf("foreign owner clobbered status -> %q want running", recs[0].Status)
+	}
+	if owners[0].Pid != 1 {
+		t.Errorf("foreign owner changed ownership -> pid %d want 1", owners[0].Pid)
+	}
+	// The TRUE owner (pid 1) can still update its own row.
+	if err := s.UpsertJobs([]model.JobRecord{rec("x", "completed")}, 1, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	recs, _, _ = s.AllJobs()
+	if string(recs[0].Status) != "completed" {
+		t.Errorf("owner self-update blocked -> %q want completed", recs[0].Status)
+	}
+}

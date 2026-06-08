@@ -84,7 +84,8 @@ ON CONFLICT(jobId) DO UPDATE SET
   runsDir=excluded.runsDir, worktreePath=excluded.worktreePath, branch=excluded.branch, pid=excluded.pid,
   status=excluded.status, startedAt=excluded.startedAt, errorCode=excluded.errorCode,
   errorMessage=excluded.errorMessage, ownerPid=excluded.ownerPid, ownerStartedAt=excluded.ownerStartedAt,
-  updatedAt=excluded.updatedAt;`
+  updatedAt=excluded.updatedAt
+WHERE jobs.ownerPid=excluded.ownerPid OR jobs.ownerPid=0;`
 
 // UpsertJobs writes the caller's own records in one transaction, stamping owner.
 // It never deletes or rewrites rows it does not own.
