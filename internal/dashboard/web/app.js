@@ -227,7 +227,15 @@ function renderDetail(d) {
 
   const noRun = (!d.agents || d.agents.length === 0) && !d.tokenUsage && !d.blindWindow;
   if (d.blindWindow) {
-    h += `<div class="notice"><div class="big">✍</div><b>Orchestrator is authoring the workflow…</b><br>No run file yet (the ~20s blind window).</div>`;
+    const a = d.authoring || {};
+    const model = a.model || "orchestrator";
+    const plan = a.preview
+      ? `<pre class="authpre">${esc(a.preview)}</pre>`
+      : `<div class="authwait"><span class="spin"></span> waiting for the plan… (the author returns it in one shot near the end)</div>`;
+    h += `<div class="authoring">
+      <div class="authhead">✍ writing the workflow plan…
+        <span class="authmeta">· <span data-elapsed="${d.startedAt}">${elapsed(d.startedAt)}</span> · ${esc(model)}</span></div>
+      ${plan}</div>`;
     $("#panel").innerHTML = h; return;
   }
   if (noRun) {

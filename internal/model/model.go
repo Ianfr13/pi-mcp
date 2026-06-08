@@ -246,10 +246,10 @@ type StatusOutput struct {
 	Intermediate []IntermediateResult `json:"intermediate"`                                                                                                                        // grows each poll
 	Result       any                  `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"` // any + jsonschema tag => object schema ({description}) that accepts any JSON and validates in strict MCP clients (Claude Code)
 	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
-	Write        *WriteInfo           `json:"write,omitempty"`    // iff write
-	Progress     *Progress            `json:"progress,omitempty"` // heartbeat for non-terminal jobs (elapsed + worktree activity)
+	Write        *WriteInfo           `json:"write,omitempty"`     // iff write
+	Progress     *Progress            `json:"progress,omitempty"`  // heartbeat for non-terminal jobs (elapsed + worktree activity)
 	Authoring    *AuthoringInfo       `json:"authoring,omitempty"` // live authoring preview, populated in the blind window
-	Error        string               `json:"error,omitempty"`    // failed/aborted message
+	Error        string               `json:"error,omitempty"`     // failed/aborted message
 }
 
 // --- pi_list (§5.3) ---
