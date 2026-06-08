@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -95,6 +96,62 @@ func TestRun_RegistersFourToolsBeforeServing(t *testing.T) {
 	for _, name := range []string{"pi_workflow", "pi_status", "pi_list", "pi_cancel"} {
 		if !strings.Contains(out, name) {
 			t.Fatalf("expected tool %q to be logged as registered; log=%q", name, out)
+		}
+	}
+}
+
+type fakeReconciler struct{ calls chan struct{} }
+
+func (f *fakeReconciler) Reconcile(ctx context.Context) (int, error) {
+	select {
+	case f.calls <- struct{}{}:
+	default:
+	}
+	return 0, nil
+}
+
+func TestReconcileLoop_TicksUntilCtxDone(t *testing.T) {
+	fr := &fakeReconciler{calls: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		reconcileLoop(ctx, fr, time.Millisecond, log.New(&bytes.Buffer{}, "", 0))
+		close(done)
+	}()
+	select {
+	case <-fr.calls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcileLoop never ticked")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcileLoop did not stop on ctx cancel")
+	}
+}
+
+type errReconciler struct{ calls chan struct{} }
+
+func (e errReconciler) Reconcile(ctx context.Context) (int, error) {
+	select {
+	case e.calls <- struct{}{}:
+	default:
+	}
+	return 0, errors.New("recon boom")
+}
+
+func TestReconcileLoop_ContinuesAfterError(t *testing.T) {
+	er := errReconciler{calls: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go reconcileLoop(ctx, er, time.Millisecond, log.New(&bytes.Buffer{}, "", 0))
+	for i := 0; i < 2; i++ { // two ticks => the loop did not die on the first error
+		select {
+		case <-er.calls:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reconcileLoop stopped after an error")
 		}
 	}
 }

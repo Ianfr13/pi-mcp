@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -22,6 +23,33 @@ const (
 	serverName    = "pi-mcp"
 	serverVersion = "v0.1.0"
 )
+
+// reconcileInterval is how often the periodic sweep reaps dead-owner jobs. Boot
+// reconcile only catches siblings that died before THIS server started; a sibling
+// that dies later must be reaped too.
+const reconcileInterval = 60 * time.Second
+
+// reconciler is the subset of *jobs.Registry the periodic loop needs (test seam).
+type reconciler interface {
+	Reconcile(ctx context.Context) (int, error)
+}
+
+// reconcileLoop reconciles every interval until ctx is done. A reconcile error is
+// logged and the loop continues — a transient DB error must not stop future sweeps.
+func reconcileLoop(ctx context.Context, r reconciler, interval time.Duration, logger *log.Logger) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := r.Reconcile(ctx); err != nil {
+				logger.Printf("periodic reconcile error: %v (continuing)", err)
+			}
+		}
+	}
+}
 
 // Deps carries the app's collaborators. The function fields are seams that
 // default (via fill) to the real implementations; tests override them.
@@ -72,6 +100,8 @@ func Run(ctx context.Context, in Deps) error {
 	} else {
 		d.Logger.Printf("startup reconciled %d job record(s)", n)
 	}
+
+	go reconcileLoop(ctx, reg, reconcileInterval, d.Logger)
 
 	js := &jobsAdapter{reg: reg}
 	rs := runStoreAdapter{}
