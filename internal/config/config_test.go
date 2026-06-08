@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +97,29 @@ func TestAllErrorCodes(t *testing.T) {
 		if got != want {
 			t.Errorf("error code const = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestStateDir_XDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/xdg/state")
+	if got := StateDir(); got != "/xdg/state" {
+		t.Errorf("StateDir()=%q want /xdg/state", got)
+	}
+}
+
+func TestStateDir_HomeFallback(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/home/u")
+	want := "/home/u/.local/state"
+	if got := StateDir(); got != want {
+		t.Errorf("StateDir()=%q want %q", got, want)
+	}
+}
+
+func TestRegistryPath(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/xdg/state")
+	want := filepath.Join("/xdg/state", "pi-mcp", "registry.json")
+	if got := RegistryPath(); got != want {
+		t.Errorf("RegistryPath()=%q want %q", got, want)
 	}
 }

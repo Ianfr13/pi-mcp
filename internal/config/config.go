@@ -4,7 +4,11 @@
 // and the §9 error-code string constants. Leaf package: no internal deps.
 package config
 
-import "time"
+import (
+	"os"
+	"path/filepath"
+	"time"
+)
 
 // ---- concurrency / liveness (§8) ----
 const (
@@ -123,3 +127,22 @@ const (
 	ErrNotAGitRepo   = "NOT_A_GIT_REPO"  // write cwd is not a git repo (fail before spawn)
 	ErrNoWorkflowRun = "NO_WORKFLOW_RUN" // no tool_execution_end(workflow) — trigger not wired (no retry)
 )
+
+// ---- shared state-path resolution (Task 2) ----
+// StateDir resolves pi-mcp's state base dir: $XDG_STATE_HOME, else
+// $HOME/.local/state, else the OS temp dir. This is the single source of truth
+// shared by the MCP server (internal/app) and the dashboard.
+func StateDir() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return xdg
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".local", "state")
+	}
+	return os.TempDir()
+}
+
+// RegistryPath is the job-registry file: <StateDir>/pi-mcp/registry.json.
+func RegistryPath() string {
+	return filepath.Join(StateDir(), "pi-mcp", "registry.json")
+}

@@ -109,22 +109,12 @@ func buildRegistryReal(Deps) (*jobs.Registry, error) {
 // statePaths resolves the registry persist file and the worktree scan root under
 // the XDG state dir (mirroring the worktree package's base-dir resolution).
 func statePaths() (persist, worktreeRoot string, err error) {
-	base := xdgStateDir()
+	base := config.StateDir()
 	root := filepath.Join(base, config.WorktreeSubdir)
 	if mkErr := os.MkdirAll(root, 0o755); mkErr != nil {
 		return "", "", fmt.Errorf("create state dir: %w", mkErr)
 	}
-	return filepath.Join(base, "pi-mcp", "registry.json"), root, nil
-}
-
-func xdgStateDir() string {
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return xdg
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, ".local", "state")
-	}
-	return os.TempDir()
+	return config.RegistryPath(), root, nil
 }
 
 func newServerReal() *mcp.Server {
