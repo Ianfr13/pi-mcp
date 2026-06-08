@@ -150,7 +150,7 @@ func StateDir() string {
 	return os.TempDir()
 }
 
-// RegistryPath is the job-registry file: <StateDir>/pi-mcp/registry.json.
+// RegistryPath is the SQLite job-registry DB: <StateDir>/pi-mcp/registry.db.
 func RegistryPath() string {
-	return filepath.Join(StateDir(), "pi-mcp", "registry.json")
+	return filepath.Join(StateDir(), "pi-mcp", "registry.db")
 }

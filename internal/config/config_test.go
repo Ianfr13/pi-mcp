@@ -1,7 +1,6 @@
 package config
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,7 +117,7 @@ func TestStateDir_HomeFallback(t *testing.T) {
 
 func TestRegistryPath(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/xdg/state")
-	want := filepath.Join("/xdg/state", "pi-mcp", "registry.json")
+	want := "/xdg/state/pi-mcp/registry.db"
 	if got := RegistryPath(); got != want {
 		t.Errorf("RegistryPath()=%q want %q", got, want)
 	}
