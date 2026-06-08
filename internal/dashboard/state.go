@@ -77,6 +77,7 @@ type JobDetail struct {
 	Intermediate []model.IntermediateResult `json:"intermediate"`
 	TokenUsage   *model.TokenUsage          `json:"tokenUsage,omitempty"`
 	Result       any                        `json:"result,omitempty"`
+	Authoring    *model.AuthoringInfo       `json:"authoring,omitempty"` // blind-window live plan
 }
 
 // readRun is the run-file loader seam (overridable in tests). It builds the path
@@ -188,7 +189,12 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 	d := JobDetail{JobSummary: summarize(rec, now), Agents: []AgentView{}, Intermediate: []model.IntermediateResult{}}
 	run, err := readRun(rec.RunsDir, rec.RunID)
 	if err != nil || run == nil {
-		return d, true // blind / no run file: summary only
+		if d.BlindWindow {
+			if a, ok := runstore.ReadAuthoring(rec.RunsDir, rec.JobID); ok {
+				d.Authoring = a
+			}
+		}
+		return d, true // blind / no run file: summary (+authoring) only
 	}
 	d.Phases = run.Phases
 	d.Agents = make([]AgentView, 0, len(run.Agents))

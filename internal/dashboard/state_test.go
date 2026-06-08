@@ -1,10 +1,12 @@
 package dashboard
 
 import (
+	"os"
 	"testing"
 	"time"
 
 	"pi-mcp/internal/model"
+	"pi-mcp/internal/runstore"
 )
 
 // nowFresh is close to the fixtures' updatedAt (2026-06-07T16:51:55Z) so running
@@ -173,5 +175,25 @@ func TestBuildDetail_BlindHasNoRunFile(t *testing.T) {
 	}
 	if len(d.Agents) != 0 || !d.BlindWindow {
 		t.Errorf("blind detail: agents=%d blind=%v", len(d.Agents), d.BlindWindow)
+	}
+}
+
+func TestBuildDetail_BlindWindowAttachesAuthoring(t *testing.T) {
+	dir := t.TempDir()
+	// running job, runId empty => blind window (readRun returns fs.ErrNotExist)
+	rec := model.JobRecord{JobID: "job-A", RunsDir: dir, Mode: model.ModeRead, Status: model.JobRunning, StartedAt: nowFresh.Add(-5 * time.Second)}
+	if err := os.WriteFile(runstore.AuthoringPath(dir, "job-A"),
+		[]byte(`{"jobId":"job-A","model":"openai-codex/gpt-5.5","preview":"phase('Recon')","done":false,"updatedAt":"2026-06-08T17:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, ok := BuildDetail(rec, nowFresh)
+	if !ok {
+		t.Fatal("BuildDetail ok=false")
+	}
+	if !d.BlindWindow {
+		t.Fatalf("expected blindWindow; got status=%q", d.Status)
+	}
+	if d.Authoring == nil || d.Authoring.Preview != "phase('Recon')" {
+		t.Errorf("Authoring = %+v", d.Authoring)
 	}
 }
