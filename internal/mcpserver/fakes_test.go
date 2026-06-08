@@ -17,8 +17,16 @@ type fakeJobs struct {
 	cancelRec model.JobRecord
 	cancelErr error
 	writeInfo map[string]model.WriteInfo // jobID -> write info
+	activity  map[string]wtActivity      // jobID -> worktree activity
 
 	lastSpec JobSpec // captured for assertions
+}
+
+// wtActivity scripts a fakeJobs.WorktreeActivity return.
+type wtActivity struct {
+	files        int
+	lastModified time.Time
+	ok           bool
 }
 
 func newFakeJobs() *fakeJobs {
@@ -26,6 +34,7 @@ func newFakeJobs() *fakeJobs {
 		lookup:    map[string]model.JobRecord{},
 		byRun:     map[string]model.JobRecord{},
 		writeInfo: map[string]model.WriteInfo{},
+		activity:  map[string]wtActivity{},
 	}
 }
 
@@ -46,15 +55,23 @@ func (f *fakeJobs) WriteInfoFor(jobID string) (model.WriteInfo, bool) {
 	wi, ok := f.writeInfo[jobID]
 	return wi, ok
 }
+func (f *fakeJobs) WorktreeActivity(jobID string) (int, time.Time, bool) {
+	a, ok := f.activity[jobID]
+	if !ok {
+		return 0, time.Time{}, false
+	}
+	return a.files, a.lastModified, a.ok
+}
 
 // fakeStore implements RunStore. runs is keyed by runsDir+"/"+runID.
 // seq lets a test return a DIFFERENT *model.Run on successive Load calls (long-poll growth).
 type fakeStore struct {
-	runs    map[string]*model.Run
-	seq     []*model.Run // if non-nil, returned in order, last value sticks
-	calls   int
-	list    []model.ListItem
-	listErr error
+	runs      map[string]*model.Run
+	seq       []*model.Run // if non-nil, returned in order, last value sticks
+	calls     int
+	list      []model.ListItem
+	listErr   error
+	authoring map[string]*model.AuthoringInfo // keyed by jobID
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{runs: map[string]*model.Run{}} }
@@ -79,6 +96,10 @@ func (f *fakeStore) Load(runsDir, runID string) (*model.Run, error) {
 	return r, nil
 }
 func (f *fakeStore) ListItems(string, int) ([]model.ListItem, error) { return f.list, f.listErr }
+func (f *fakeStore) ReadAuthoring(runsDir, jobID string) (*model.AuthoringInfo, bool) {
+	a, ok := f.authoring[jobID]
+	return a, ok
+}
 
 // strptr/i64ptr helpers for building fixtures in tests.
 func strptr(s string) *string { return &s }

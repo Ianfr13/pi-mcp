@@ -103,6 +103,39 @@ func TestRealLauncher_NoWorkflowRunSurfacesError(t *testing.T) {
 	}
 }
 
+func TestRealLauncher_OversizedLineBeforeSessionStillSurfaces(t *testing.T) {
+	// A JSONL line > 1MiB precedes the session line. The session id must still
+	// surface during the blind window, and wait() must return nil (no parse
+	// error). On the OLD 1MiB-capped scanner ParseStream aborts at the big line,
+	// so the session is never reached and wait() errors.
+	big := strings.Repeat("x", (1<<20)+4096)
+	fix := writeFixture(t, ``+
+		`{"type":"__big__","blob":"`+big+`"}`+"\n"+
+		`{"type":"session","id":"sess-big-1","cwd":"/tmp"}`+"\n"+
+		`{"type":"tool_execution_end","toolName":"workflow","isError":false,`+
+		`"result":{"content":[{"type":"text","text":"ok"}]}}`+"\n")
+	installFakePi(t, fix)
+
+	_, sessionCh, wait, err := realLauncher{}.Launch(context.Background(), jobs.Spec{
+		Mode: model.ModeRead, CWD: t.TempDir(), Task: "judge", RunsDir: "/x",
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case sid := <-sessionCh:
+		if sid != "sess-big-1" {
+			t.Fatalf("sessionCh = %q, want sess-big-1", sid)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for session id on sessionCh")
+	}
+
+	if err := wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+}
+
 func TestRealLauncher_WorkflowIsErrorSurfacesText(t *testing.T) {
 	// A workflow that ran but failed (isError:true) -> the isError text is surfaced.
 	fix := writeFixture(t, ``+

@@ -73,6 +73,25 @@ type TokenUsage struct {
 	CacheWrite int64   `json:"cacheWrite"`
 }
 
+// AuthoringInfo is a blind-window authoring snapshot: a live tail of the
+// orchestrator's streamed plan and reasoning, persisted to
+// <runsDir>/<jobID>.authoring while the orchestrator is still authoring the
+// workflow script. All fields are scalar/string so the value is MCP-safe (no
+// nested objects, no maps). JobID/Model are echoed for cross-referencing the
+// source job; Chars is the live count of the underlying assistant text (pre-
+// truncation), Preview is the UTF-8-safe tail truncated to
+// config.MaxAuthoringPreviewBytes, Done flips to true the moment the orchestrator
+// calls the `workflow` tool (after which the observer keeps draining to EOF —
+// the value is read-once, the writer is fire-and-forget).
+type AuthoringInfo struct {
+	JobID     string `json:"jobId"`
+	Model     string `json:"model"`
+	Chars     int    `json:"chars"`
+	Preview   string `json:"preview,omitempty"`
+	Done      bool   `json:"done"`
+	UpdatedAt string `json:"updatedAt"` // RFC3339Nano UTC
+}
+
 // ---------- pi --mode json stream events (§7) ----------
 // Line-delimited JSON; switch on .Type; ignore unknown types.
 
@@ -199,6 +218,17 @@ type StatusMetadata struct {
 	DurationMs *int64         `json:"durationMs,omitempty"`
 }
 
+// Progress is a heartbeat/liveness signal for a still-running job: how long it
+// has been running and (for write jobs) how much it has written and how recently.
+// It lets callers distinguish a slow-but-working job from a wedged one instead of
+// staring at an opaque "running" — and keeps a directly-editing write job from
+// looking dead when its run file goes stale.
+type Progress struct {
+	ElapsedSeconds      int64  `json:"elapsed_seconds"`                 // seconds since the job started
+	WorktreeFiles       int    `json:"worktree_files,omitempty"`        // write mode: files present in the worktree (HEAD checkout + agent additions); grows as the agent writes
+	LastActivitySeconds *int64 `json:"last_activity_seconds,omitempty"` // write mode: age of the newest worktree change (small = actively working)
+}
+
 // WriteInfo is the write-mode delivery block (§4.1/§5.2), present iff write.
 type WriteInfo struct {
 	Branch       string   `json:"branch"`
@@ -216,8 +246,10 @@ type StatusOutput struct {
 	Intermediate []IntermediateResult `json:"intermediate"`                                                                                                                        // grows each poll
 	Result       any                  `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"` // any + jsonschema tag => object schema ({description}) that accepts any JSON and validates in strict MCP clients (Claude Code)
 	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
-	Write        *WriteInfo           `json:"write,omitempty"` // iff write
-	Error        string               `json:"error,omitempty"` // failed/aborted message
+	Write        *WriteInfo           `json:"write,omitempty"`     // iff write
+	Progress     *Progress            `json:"progress,omitempty"`  // heartbeat for non-terminal jobs (elapsed + worktree activity)
+	Authoring    *AuthoringInfo       `json:"authoring,omitempty"` // live authoring preview, populated in the blind window
+	Error        string               `json:"error,omitempty"`     // failed/aborted message
 }
 
 // --- pi_list (§5.3) ---

@@ -4,6 +4,7 @@
 package jobs
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ type Spec struct {
 	Context       string // optional extra context
 	Worktree      string // write mode only
 	Branch        string // write mode only
+	JobID         string // the JobRecord's JobID; carried so the Launcher can write <runsDir>/<jobID>.authoring during the blind window
 	PreassignedID string // when non-empty, NewJob uses this as JobID instead of minting
 }
 
@@ -31,12 +33,13 @@ type Spec struct {
 // terminal).
 type Job struct {
 	Record     model.JobRecord
-	task       string        // in-memory only (not persisted; may be secret)
-	context    string        // in-memory only (not persisted; may be secret)
-	updatedAt  time.Time     // registry-local last-transition clock (not persisted as a field)
-	cancel     func()        // cancels the launch context (kills the pi process); nil until running
-	done       chan struct{} // closed when the job reaches a terminal state
-	correlated chan struct{} // closed when the correlate goroutine exits; nil if never started
+	task       string          // in-memory only (not persisted; may be secret)
+	context    string          // in-memory only (not persisted; may be secret)
+	updatedAt  time.Time       // registry-local last-transition clock (not persisted as a field)
+	ctx        context.Context // the launch context (installed atomically with cancel under mu); nil until running
+	cancel     func()          // cancels the launch context (kills the pi process); nil until running
+	done       chan struct{}   // closed when the job reaches a terminal state
+	correlated chan struct{}   // closed when the correlate goroutine exits; nil if never started
 }
 
 // NewID returns a fresh uuidv4 string. The app uses it to pre-mint a jobID when

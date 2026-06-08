@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pi-mcp · control plane</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">π</span>
+      <span class="title">pi-mcp<span class="dim"> · control plane</span></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="topright">
+      <span class="statedir" id="statedir"></span>
+      <span class="conn" id="conn"><i></i><span id="conntxt">connecting…</span></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="rail">
+      <div class="railsec">
+        <div class="railhead"><span class="rh-title">Live</span><span class="badge" id="livecount">0</span></div>
+        <div id="live" class="cards"></div>
+      </div>
+      <div class="railsec grow">
+        <div class="railhead">
+          <span class="rh-title">History</span>
+          <div class="seg" id="filter">
+            <button data-w="24h" class="on">24h</button><button data-w="7d">7d</button><button data-w="all">all</button>
+          </div>
+        </div>
+        <div id="history" class="cards"></div>
+      </div>
+    </aside>
+    <section class="panel" id="panel"></section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

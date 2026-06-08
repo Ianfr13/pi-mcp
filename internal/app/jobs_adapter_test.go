@@ -64,10 +64,13 @@ func newAdapter(t *testing.T) (*jobsAdapter, string) {
 	t.Helper()
 	base := t.TempDir()
 	setWorktreeBase(t, base)
-	reg := jobs.NewRegistry(
-		jobs.Config{Cap: 4, PersistPath: filepath.Join(t.TempDir(), "r.json")},
+	reg, err := jobs.NewRegistry(
+		jobs.Config{Cap: 4, PersistPath: filepath.Join(t.TempDir(), "registry.db")},
 		noopLauncher{}, noopCorrelator{}, worktreePruner{},
 	)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
 	t.Cleanup(func() { _ = reg.Close() })
 	a := &jobsAdapter{reg: reg}
 	return a, base
@@ -167,5 +170,97 @@ func TestSubmit_WriteOnNonGitRepoReturnsErrNotAGitRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NOT_A_GIT_REPO") {
 		t.Fatalf("error = %q, want it to contain NOT_A_GIT_REPO", err.Error())
+	}
+}
+
+// scanWorktreeActivity must count regular files while skipping the .git and .pi
+// bookkeeping dirs, and report the newest agent-written file's mtime.
+func TestScanWorktreeActivity(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string, mod time.Time) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	mk("go.mod", base.Add(1*time.Minute))
+	mk("internal/store/store.go", base.Add(2*time.Minute))   // newest agent file
+	mk(".git/HEAD", base.Add(10*time.Minute))                // must be ignored
+	mk(".pi/workflows/runs/r.json", base.Add(9*time.Minute)) // must be ignored
+
+	files, newest := scanWorktreeActivity(root)
+	if files != 2 {
+		t.Fatalf("want 2 agent files (excluding .git/.pi), got %d", files)
+	}
+	if want := base.Add(2 * time.Minute); !newest.Equal(want) {
+		t.Fatalf("newest mtime = %v, want %v (must ignore .git/.pi churn)", newest, want)
+	}
+}
+
+func TestScanWorktreeActivity_Empty(t *testing.T) {
+	files, newest := scanWorktreeActivity(filepath.Join(t.TempDir(), "does-not-exist"))
+	if files != 0 || !newest.IsZero() {
+		t.Fatalf("absent worktree must yield (0, zero), got (%d, %v)", files, newest)
+	}
+}
+
+// A LINKED git worktree (git worktree add ... HEAD) has a .git FILE (a gitdir
+// pointer), not a directory. scanWorktreeActivity must skip it whether it is a
+// file or a dir, so it neither counts the pointer nor lets its mtime drive the
+// liveness signal.
+func TestScanWorktreeActivity_GitPointerFileSkipped(t *testing.T) {
+	root := t.TempDir()
+	base := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	// .git as a FILE with a far-future mtime (must be ignored for count AND mtime).
+	gitPtr := filepath.Join(root, ".git")
+	if err := os.WriteFile(gitPtr, []byte("gitdir: /elsewhere/.git/worktrees/x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(gitPtr, base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"main.go", "internal/x.go"} {
+		p := filepath.Join(root, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, newest := scanWorktreeActivity(root)
+	if files != 2 {
+		t.Fatalf("must skip the .git pointer FILE, counted %d (want 2)", files)
+	}
+	if !newest.Equal(base) {
+		t.Fatalf("newest mtime must ignore the .git pointer's future time, got %v want %v", newest, base)
+	}
+}
+
+// scanWorktreeActivity counts regular files only; a symlink (non-regular) must
+// not inflate the count nor (via its lstat time) drive the liveness mtime.
+func TestScanWorktreeActivity_IgnoresSymlinks(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real.go")
+	if err := os.WriteFile(real, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(root, "link.go")); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+	files, _ := scanWorktreeActivity(root)
+	if files != 1 {
+		t.Fatalf("symlink must not be counted as a file, got %d (want 1)", files)
 	}
 }

@@ -11,14 +11,13 @@ package parser
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 
 	"pi-mcp/internal/config"
 )
-
-const maxLineBytes = 1 << 20 // 1MB scanner buffer (longest fixture line ~13.5KB)
 
 // Result is the outcome of parsing a full pi -p --mode json stream.
 type Result struct {
@@ -64,44 +63,50 @@ type contentBlock struct {
 // proc.Wait(): it simply reads to EOF.
 func ParseStream(ctx context.Context, r io.Reader) (Result, error) {
 	var res Result
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	// A bufio.Reader with ReadBytes('\n') handles arbitrarily long lines (pi is a
+	// trusted local process), unlike a capped bufio.Scanner which aborts a single
+	// line > its buffer with bufio.ErrTooLong.
+	br := bufio.NewReader(r)
 
-	for sc.Scan() {
+	for {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		raw := sc.Bytes()
-		if len(raw) == 0 {
-			continue
-		}
-		var ev streamEvent
-		if err := json.Unmarshal(raw, &ev); err != nil {
-			// Malformed line: ignore (resilient stream parsing), do not abort.
-			continue
-		}
-		switch ev.Type {
-		case "session":
-			if res.SessionID == "" {
-				res.SessionID = ev.ID
-			}
-		case "tool_execution_end":
-			if ev.ToolName == "workflow" {
-				res.WorkflowFound = true
-				res.IsError = ev.IsError
-				if ev.Result != nil && len(ev.Result.Content) > 0 {
-					res.RawText = ev.Result.Content[0].Text
+		raw, err := br.ReadBytes('\n')
+		// raw may hold a final unterminated line together with io.EOF; process it
+		// before checking err so trailing data is not dropped.
+		raw = bytes.TrimRight(raw, "\n")
+		raw = bytes.TrimRight(raw, "\r")
+		if len(raw) > 0 {
+			var ev streamEvent
+			if jerr := json.Unmarshal(raw, &ev); jerr == nil {
+				switch ev.Type {
+				case "session":
+					if res.SessionID == "" {
+						res.SessionID = ev.ID
+					}
+				case "tool_execution_end":
+					if ev.ToolName == "workflow" {
+						res.WorkflowFound = true
+						res.IsError = ev.IsError
+						if ev.Result != nil && len(ev.Result.Content) > 0 {
+							res.RawText = ev.Result.Content[0].Text
+						}
+						res.Result = extractWorkflowResult(res.RawText)
+					}
+				default:
+					// Unknown / uninteresting type: ignore.
 				}
-				res.Result = extractWorkflowResult(res.RawText)
 			}
-		default:
-			// Unknown / uninteresting type: ignore.
+			// Malformed line: ignore (resilient stream parsing), do not abort.
+		}
+		if err != nil {
+			if err == io.EOF {
+				return res, nil
+			}
+			return res, err
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return res, err
-	}
-	return res, nil
 }
 
 // Err returns config.ErrNoWorkflowRun ("NO_WORKFLOW_RUN") when the stream

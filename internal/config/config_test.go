@@ -19,6 +19,9 @@ func TestConstants(t *testing.T) {
 	if WaitCap != 60*time.Second {
 		t.Errorf("WaitCap = %v, want 60s", WaitCap)
 	}
+	if MaxAuthoringRetries != 2 {
+		t.Errorf("MaxAuthoringRetries = %d, want 2", MaxAuthoringRetries)
+	}
 }
 
 func TestPiInvocation(t *testing.T) {
@@ -42,6 +45,7 @@ func TestForcingPromptTemplate(t *testing.T) {
 		"background:false",
 		"Do not use background:true",
 		"INLINE",
+		"tokenBudget", // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
 		"{{CONTRACT}}",
 		"{{TASK}}",
 		"{{CONTEXT}}",
@@ -84,6 +88,7 @@ func TestAllErrorCodes(t *testing.T) {
 		ErrSchemaNoncompliance:   "SCHEMA_NONCOMPLIANCE",
 		ErrPersistenceError:      "PERSISTENCE_ERROR",
 		ErrUnknown:               "UNKNOWN",
+		ErrServerRestarted:       "SERVER_RESTARTED",
 		ErrNotAGitRepo:           "NOT_A_GIT_REPO",
 		ErrNoWorkflowRun:         "NO_WORKFLOW_RUN",
 	}
@@ -91,5 +96,29 @@ func TestAllErrorCodes(t *testing.T) {
 		if got != want {
 			t.Errorf("error code const = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestStateDir_XDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/xdg/state")
+	if got := StateDir(); got != "/xdg/state" {
+		t.Errorf("StateDir()=%q want /xdg/state", got)
+	}
+}
+
+func TestStateDir_HomeFallback(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/home/u")
+	want := "/home/u/.local/state"
+	if got := StateDir(); got != want {
+		t.Errorf("StateDir()=%q want %q", got, want)
+	}
+}
+
+func TestRegistryPath(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/xdg/state")
+	want := "/xdg/state/pi-mcp/registry.db"
+	if got := RegistryPath(); got != want {
+		t.Errorf("RegistryPath()=%q want %q", got, want)
 	}
 }

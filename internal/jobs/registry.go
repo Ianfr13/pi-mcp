@@ -2,6 +2,9 @@ package jobs
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,12 +40,21 @@ type Registry struct {
 	launcher   Launcher
 	correlator Correlator
 	pruner     Pruner
+
+	// hasRunFile reports whether a run file exists in runsDir (the fleet started).
+	// It is the authoring-retry oracle: a failure with NO run file is an authoring
+	// failure (cheap to retry); a failure WITH one is an execution failure (don't
+	// re-run the fleet). Injectable so tests decide deterministically.
+	hasRunFile func(runsDir string) bool
+
+	store          *regStore
+	ownerPid       int
+	ownerStartedAt string
 }
 
-// NewRegistry builds a Registry. cfg.Cap<=0 uses config.DefaultConcurrencyCap.
-// Dependency injection happens here: the app builds the real Launcher/
-// Correlator/Pruner and passes them in. There is no jobs.New / jobs.Options.
-func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) *Registry {
+// NewRegistry builds a Registry over a SQLite store at cfg.PersistPath. cfg.Cap<=0
+// uses config.DefaultConcurrencyCap. Returns an error if the store cannot open.
+func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, error) {
 	capN := cfg.Cap
 	if capN <= 0 {
 		capN = config.DefaultConcurrencyCap
@@ -51,17 +63,25 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) *Registry {
 	if now == nil {
 		now = time.Now
 	}
-	return &Registry{
-		jobs:         make(map[string]*Job),
-		slots:        make(chan struct{}, capN),
-		cap:          capN,
-		persistPath:  cfg.PersistPath,
-		worktreeRoot: cfg.WorktreeRoot,
-		now:          now,
-		launcher:     l,
-		correlator:   c,
-		pruner:       p,
+	store, err := OpenStore(cfg.PersistPath)
+	if err != nil {
+		return nil, err
 	}
+	return &Registry{
+		jobs:           make(map[string]*Job),
+		slots:          make(chan struct{}, capN),
+		cap:            capN,
+		persistPath:    cfg.PersistPath,
+		worktreeRoot:   cfg.WorktreeRoot,
+		now:            now,
+		launcher:       l,
+		correlator:     c,
+		pruner:         p,
+		hasRunFile:     runFileExists,
+		store:          store,
+		ownerPid:       os.Getpid(),
+		ownerStartedAt: now().UTC().Format(time.RFC3339Nano),
+	}, nil
 }
 
 // recordsUnlocked returns persisted-shape records for all jobs. Caller holds mu.
@@ -73,11 +93,11 @@ func (r *Registry) recordsUnlocked() []model.JobRecord {
 	return out
 }
 
-// flushUnlocked persists the current registry. Caller holds mu. Persistence
-// errors are returned (callers log-and-continue; a launch never blocks on a
-// persistence error).
+// flushUnlocked persists THIS server's jobs (owner-stamped) to the shared DB.
+// It only upserts rows this server owns, so concurrent servers never clobber
+// each other. Caller holds mu.
 func (r *Registry) flushUnlocked() error {
-	return persist(r.persistPath, r.recordsUnlocked())
+	return r.store.UpsertJobs(r.recordsUnlocked(), r.ownerPid, r.ownerStartedAt)
 }
 
 // Submit admits a new job if a slot is free (Status=running) or queues it
@@ -91,7 +111,26 @@ func (r *Registry) Submit(ctx context.Context, spec Spec) (model.JobRecord, erro
 	r.mu.Lock()
 	r.jobs[j.Record.JobID] = j
 	admitted := r.tryAdmitUnlocked(j)
-	_ = r.flushUnlocked()
+	// The initial Submit flush is mandatory: if we cannot persist the new job we
+	// must not proceed (an un-persisted running job would be lost on restart).
+	// Roll back tryAdmitUnlocked exactly under the SAME held lock, then fail.
+	// (Later flushes in start/correlate/finish stay best-effort for now.)
+	if flushErr := r.flushUnlocked(); flushErr != nil {
+		delete(r.jobs, j.Record.JobID)
+		if admitted {
+			select {
+			case <-r.slots:
+			default:
+			}
+			if j.cancel != nil {
+				j.cancel()
+			}
+		} else {
+			r.removeFromQueueUnlocked(j)
+		}
+		r.mu.Unlock()
+		return model.JobRecord{}, fmt.Errorf("%s: %w", config.ErrPersistenceError, flushErr)
+	}
 	r.mu.Unlock()
 
 	if admitted {
@@ -106,12 +145,22 @@ func (r *Registry) Submit(ctx context.Context, spec Spec) (model.JobRecord, erro
 	return rec, nil
 }
 
+// startingUnlocked installs the launch context+cancel AND marks the job running
+// atomically under r.mu, so a running job never coexists with a nil cancel (the
+// cancel-vs-launch race). Caller holds mu.
+func (r *Registry) startingUnlocked(j *Job) {
+	ctx, cancel := context.WithCancel(context.Background())
+	j.ctx = ctx
+	j.cancel = cancel
+	j.markUnlocked(model.JobRunning, r.now())
+}
+
 // tryAdmitUnlocked grabs a slot for j if one is free, marking it running.
 // Otherwise it enqueues j (queued). Returns true iff admitted. Caller holds mu.
 func (r *Registry) tryAdmitUnlocked(j *Job) bool {
 	select {
 	case r.slots <- struct{}{}:
-		j.markUnlocked(model.JobRunning, r.now())
+		r.startingUnlocked(j)
 		return true
 	default:
 		j.markUnlocked(model.JobQueued, r.now())
@@ -120,12 +169,15 @@ func (r *Registry) tryAdmitUnlocked(j *Job) bool {
 	}
 }
 
-// start launches the pi process for an admitted (running) job in a goroutine.
+// start launches the pi process for an admitted (running) job. The FIRST launch
+// is synchronous so Submit returns with the PID known; the per-attempt correlate,
+// the wait, and any authoring retries run in a background goroutine. The launch
+// ctx/cancel were installed under r.mu at admission time (by startingUnlocked),
+// so start() only reads them — it never creates its own.
 func (r *Registry) start(j *Job) {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	r.mu.Lock()
-	j.cancel = cancel
+	ctx := j.ctx
+	cancel := j.cancel
 	spec := Spec{
 		Mode:     j.Record.Mode,
 		CWD:      j.Record.CWD,
@@ -134,6 +186,7 @@ func (r *Registry) start(j *Job) {
 		Context:  j.context,
 		Worktree: j.Record.WorktreePath,
 		Branch:   j.Record.Branch,
+		JobID:    j.Record.JobID,
 	}
 	r.mu.Unlock()
 
@@ -147,38 +200,104 @@ func (r *Registry) start(j *Job) {
 	r.mu.Lock()
 	j.Record.PID = pid
 	j.updatedAt = r.now()
-	correlated := make(chan struct{})
-	j.correlated = correlated
 	_ = r.flushUnlocked()
 	r.mu.Unlock()
 
-	// Correlate jobId -> runId via the first session event. Closing correlated
-	// lets finish() wait for this goroutine, so no late flush races test cleanup.
-	// ctx is the launch context; the wait()-goroutine cancels it the moment the
-	// process exits (before finish() blocks on `correlated`), which bounds the
-	// correlation poll without deadlocking against finish().
-	go func() {
-		defer close(correlated)
-		r.correlate(ctx, j, sessionCh)
-	}()
+	go r.runAttempts(j, ctx, cancel, spec, sessionCh, wait)
+}
 
-	go func() {
+// runAttempts runs the correlate+wait cycle for the current pi process and, on an
+// AUTHORING failure (the process failed before any run file was created — the
+// fleet never ran), relaunches up to config.MaxAuthoringRetries times. A failure
+// AFTER a run file exists (the fleet ran, so RunID resolved) is NOT retried — that
+// would re-run the expensive fleet — and neither is an aborted or ctx-canceled
+// job. It calls finish() exactly once. sessionCh/wait belong to the current
+// attempt; the first pair comes from start().
+func (r *Registry) runAttempts(j *Job, ctx context.Context, cancel context.CancelFunc, spec Spec, sessionCh <-chan string, wait func() error) {
+	for attempt := 0; ; attempt++ {
+		// Per-attempt correlate context: stops this attempt's poll without tearing
+		// down the job ctx (which a retry reuses for the next launch).
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		r.mu.Lock()
+		correlated := make(chan struct{})
+		j.correlated = correlated
+		_ = r.flushUnlocked()
+		r.mu.Unlock()
+
+		go func(sc <-chan string) {
+			defer close(correlated)
+			r.correlate(attemptCtx, j, sc)
+		}(sessionCh)
+
 		werr := wait()
-		cancel()
-		if werr != nil {
-			// Distinguish a cancel-induced kill (already aborted) from a failure.
-			r.mu.Lock()
-			aborted := j.Record.Status == model.JobAborted
-			r.mu.Unlock()
-			if aborted {
-				r.finish(j, model.JobAborted, "", "")
-			} else {
-				r.finish(j, model.JobFailed, config.ErrAgentExecutionError, werr.Error())
-			}
+
+		if werr == nil {
+			attemptCancel()
+			cancel()
+			r.finish(j, model.JobCompleted, "", "")
 			return
 		}
-		r.finish(j, model.JobCompleted, "", "")
-	}()
+
+		r.mu.Lock()
+		aborted := j.Record.Status == model.JobAborted
+		r.mu.Unlock()
+		if aborted {
+			attemptCancel()
+			cancel()
+			r.finish(j, model.JobAborted, "", "")
+			return
+		}
+
+		// Retry ONLY an authoring failure: the process failed before any run file
+		// was created (the fleet never ran), so relaunching is cheap. A run file
+		// present -> execution failure -> do NOT re-run the fleet. The decision is
+		// a deterministic disk check, NOT the async correlate's resolved RunID (a
+		// premature cancel could leave it unresolved and trigger a bogus retry).
+		if attempt < config.MaxAuthoringRetries && ctx.Err() == nil && !r.hasRunFile(spec.RunsDir) {
+			attemptCancel()
+			<-correlated // serialize: this attempt's correlate must finish before the next
+			r.mu.Lock()
+			j.Record.RunID = ""
+			j.Record.SessionID = ""
+			j.updatedAt = r.now()
+			_ = r.flushUnlocked()
+			r.mu.Unlock()
+
+			npid, nsc, nwait, nerr := r.launcher.Launch(ctx, spec)
+			if nerr != nil {
+				cancel()
+				r.finish(j, model.JobFailed, config.ErrAgentExecutionError, nerr.Error())
+				return
+			}
+			r.mu.Lock()
+			j.Record.PID = npid
+			j.updatedAt = r.now()
+			_ = r.flushUnlocked()
+			r.mu.Unlock()
+			sessionCh, wait = nsc, nwait
+			continue
+		}
+
+		attemptCancel()
+		cancel()
+		r.finish(j, model.JobFailed, config.ErrAgentExecutionError, werr.Error())
+		return
+	}
+}
+
+// runFileExists reports whether runsDir contains any *.json run file (the fleet
+// started). A missing/empty dir -> false (an authoring failure never wrote one).
+func runFileExists(runsDir string) bool {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			return true
+		}
+	}
+	return false
 }
 
 // correlate consumes the sessionId from the first session event and resolves
@@ -263,13 +382,19 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	}
 
 	r.mu.Lock()
+	// Read the OLD status FIRST for the slot-release decision (a Cancel that set
+	// aborted still owns a running slot to release).
 	wasRunningSlot := j.Record.Status == model.JobRunning || j.Record.Status == model.JobAborted
-	j.markUnlocked(status, r.now())
-	if errCode != "" {
-		j.Record.ErrorCode = errCode
-	}
-	if errMsg != "" {
-		j.Record.ErrorMessage = errMsg
+	// COMPARE-AND-SET: only write status/error when not already terminal, so a
+	// clean-exit finish(JobCompleted) preserves an 'aborted' that Cancel set.
+	if !isTerminal(j.Record.Status) {
+		j.markUnlocked(status, r.now())
+		if errCode != "" {
+			j.Record.ErrorCode = errCode
+		}
+		if errMsg != "" {
+			j.Record.ErrorMessage = errMsg
+		}
 	}
 	var next *Job
 	if wasRunningSlot {
@@ -282,7 +407,7 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 		if next != nil {
 			select {
 			case r.slots <- struct{}{}:
-				next.markUnlocked(model.JobRunning, r.now())
+				r.startingUnlocked(next)
 			default:
 				// Should not happen (we just freed one); requeue defensively.
 				next.markUnlocked(model.JobQueued, r.now())
@@ -291,9 +416,20 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 			}
 		}
 	}
+	// Capture the write-prune inputs and the post-CAS final status under the lock;
+	// the actual prune runs after Unlock so it never blocks the registry, but
+	// before close(done) so the prune happens-before any waiter observes done.
+	isWrite := j.Record.Mode == model.ModeWrite
+	worktree := j.Record.WorktreePath
+	branch := j.Record.Branch
+	finalStatus := j.Record.Status
 	_ = r.flushUnlocked()
-	close(j.done)
 	r.mu.Unlock()
+
+	if isWrite && finalStatus == model.JobAborted {
+		_ = r.pruner.Prune(worktree, branch)
+	}
+	close(j.done)
 
 	if next != nil {
 		r.start(next)
@@ -368,5 +504,6 @@ func (r *Registry) Close() error {
 	for _, c := range cancels {
 		c()
 	}
+	_ = r.store.Close()
 	return err
 }

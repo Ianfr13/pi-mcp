@@ -73,3 +73,19 @@ func TestRenderPromptBadMode(t *testing.T) {
 		t.Fatal("expected error for invalid mode, got nil")
 	}
 }
+
+func TestRenderPrompt_IncludesAgentTimeout(t *testing.T) {
+	out, err := RenderPrompt("read", "do a thing", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "agentTimeoutMs") {
+		t.Errorf("prompt missing agentTimeoutMs directive:\n%s", out)
+	}
+	if !strings.Contains(out, "1200000") {
+		t.Errorf("prompt missing the 20-min timeout value:\n%s", out)
+	}
+	if !strings.Contains(out, "tokenBudget") || !strings.Contains(out, "2000000000") {
+		t.Errorf("prompt missing the explicit large tokenBudget directive:\n%s", out)
+	}
+}

@@ -79,7 +79,7 @@ func TestEffectiveStatusPostRestartNoPidCheckUsesStalenessOnly(t *testing.T) {
 func TestStatusOfAppliesStalenessOverride(t *testing.T) {
 	dir := t.TempDir()
 	clock := time.Unix(2_000_000, 0)
-	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json"),
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: filepath.Join(dir, "registry.db"),
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"),
 		&fakeCorrelator{}, &fakePruner{})
 

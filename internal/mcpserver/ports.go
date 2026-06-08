@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"time"
 
 	"pi-mcp/internal/model"
 )
@@ -27,6 +28,12 @@ type JobsService interface {
 	// WriteInfoFor returns the write-mode delivery block (branch/worktree/diff/files)
 	// for a job; ok=false when the job is unknown or not a write job.
 	WriteInfoFor(jobID string) (model.WriteInfo, bool)
+	// WorktreeActivity reports a NON-mutating liveness/progress signal for a write
+	// job: the count of files present in the worktree (the HEAD checkout plus the
+	// agent's additions — not agent-only) and the time of the most recent change.
+	// Unlike WriteInfoFor it never stages (no git add -A). ok=false for unknown or
+	// non-write jobs, or an absent worktree.
+	WorktreeActivity(jobID string) (files int, lastModified time.Time, ok bool)
 }
 
 // RunStore is the subset of the runstore the handlers need.
@@ -35,6 +42,9 @@ type RunStore interface {
 	Load(runsDir, runID string) (*model.Run, error)
 	// ListItems returns ListItem rows for <cwd>/.pi/workflows/runs, newest-first, capped to limit.
 	ListItems(cwd string, limit int) ([]model.ListItem, error)
+	// ReadAuthoring returns the live blind-window authoring snapshot for jobID
+	// (the orchestrator's in-flight plan), or (nil,false) when absent/corrupt.
+	ReadAuthoring(runsDir, jobID string) (*model.AuthoringInfo, bool)
 }
 
 // ErrRunNotFound is the sentinel handlers test with errors.Is. RunStore.Load wraps it
