@@ -93,6 +93,29 @@ func TestStatus_BlindWindow(t *testing.T) {
 	}
 }
 
+func TestStatus_BlindWindowAttachesAuthoring(t *testing.T) {
+	j := newFakeJobs()
+	j.lookup["job-A"] = model.JobRecord{
+		JobID: "job-A", RunsDir: "/runs", RunID: "", Status: model.JobRunning, Mode: model.ModeRead, PID: 1,
+	}
+	store := newFakeStore() // Load -> ErrRunNotFound (blind window)
+	store.authoring = map[string]*model.AuthoringInfo{
+		"job-A": {JobID: "job-A", Model: "openai-codex/gpt-5.5", Preview: "phase('Recon')", Done: false},
+	}
+	srv := New(j, store)
+
+	_, out, err := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-A"})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !out.BlindWindow {
+		t.Fatalf("expected blind_window=true, got %+v", out)
+	}
+	if out.Authoring == nil || out.Authoring.Preview != "phase('Recon')" || out.Authoring.Model != "openai-codex/gpt-5.5" {
+		t.Fatalf("Authoring = %+v", out.Authoring)
+	}
+}
+
 func TestStatus_RunIdPathNonexistentRun_IsQueuedNotError(t *testing.T) {
 	j := newFakeJobs() // no job owns it
 	store := newFakeStore()

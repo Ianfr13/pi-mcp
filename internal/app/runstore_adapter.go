@@ -24,3 +24,7 @@ func (runStoreAdapter) Load(runsDir, runID string) (*model.Run, error) {
 func (runStoreAdapter) ListItems(cwd string, limit int) ([]model.ListItem, error) {
 	return runstore.ListItems(cwd, limit)
 }
+
+func (runStoreAdapter) ReadAuthoring(runsDir, jobID string) (*model.AuthoringInfo, bool) {
+	return runstore.ReadAuthoring(runsDir, jobID)
+}

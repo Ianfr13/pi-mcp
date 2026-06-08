@@ -66,11 +66,12 @@ func (f *fakeJobs) WorktreeActivity(jobID string) (int, time.Time, bool) {
 // fakeStore implements RunStore. runs is keyed by runsDir+"/"+runID.
 // seq lets a test return a DIFFERENT *model.Run on successive Load calls (long-poll growth).
 type fakeStore struct {
-	runs    map[string]*model.Run
-	seq     []*model.Run // if non-nil, returned in order, last value sticks
-	calls   int
-	list    []model.ListItem
-	listErr error
+	runs      map[string]*model.Run
+	seq       []*model.Run // if non-nil, returned in order, last value sticks
+	calls     int
+	list      []model.ListItem
+	listErr   error
+	authoring map[string]*model.AuthoringInfo // keyed by jobID
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{runs: map[string]*model.Run{}} }
@@ -95,6 +96,10 @@ func (f *fakeStore) Load(runsDir, runID string) (*model.Run, error) {
 	return r, nil
 }
 func (f *fakeStore) ListItems(string, int) ([]model.ListItem, error) { return f.list, f.listErr }
+func (f *fakeStore) ReadAuthoring(runsDir, jobID string) (*model.AuthoringInfo, bool) {
+	a, ok := f.authoring[jobID]
+	return a, ok
+}
 
 // strptr/i64ptr helpers for building fixtures in tests.
 func strptr(s string) *string { return &s }

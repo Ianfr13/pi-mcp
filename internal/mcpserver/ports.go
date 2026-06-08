@@ -42,6 +42,9 @@ type RunStore interface {
 	Load(runsDir, runID string) (*model.Run, error)
 	// ListItems returns ListItem rows for <cwd>/.pi/workflows/runs, newest-first, capped to limit.
 	ListItems(cwd string, limit int) ([]model.ListItem, error)
+	// ReadAuthoring returns the live blind-window authoring snapshot for jobID
+	// (the orchestrator's in-flight plan), or (nil,false) when absent/corrupt.
+	ReadAuthoring(runsDir, jobID string) (*model.AuthoringInfo, bool)
 }
 
 // ErrRunNotFound is the sentinel handlers test with errors.Is. RunStore.Load wraps it

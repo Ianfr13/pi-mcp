@@ -164,6 +164,9 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 				// authoring phase is never an opaque silence.
 				out.Status = "running"
 				out.BlindWindow = true
+				if a, ok := s.store.ReadAuthoring(tgt.runsDir, tgt.jobID); ok {
+					out.Authoring = a
+				}
 				if tgt.mode == model.ModeWrite {
 					out.Write = s.writeBlock(tgt, nil)
 				}
