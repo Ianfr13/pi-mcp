@@ -203,3 +203,24 @@ func (p *fakePruner) callCount() int {
 	defer p.mu.Unlock()
 	return len(p.calls)
 }
+
+func (p *fakePruner) prunedBranch(b string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.calls {
+		if c.Branch == b {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *fakePruner) branches() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, len(p.calls))
+	for i, c := range p.calls {
+		out[i] = c.Branch
+	}
+	return out
+}

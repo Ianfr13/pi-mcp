@@ -167,23 +167,22 @@ func TestAdmittedRunningJobHasNonNilCancel(t *testing.T) {
 	r.waitJob(rec.JobID)
 }
 
-// A reconcile-recovered running WRITE job has no live process we own (cancel==nil),
-// its done channel is already closed, and it holds no slot — so finish() will never
-// run for it. Cancelling it must still prune the worktree synchronously (for jobs we
-// launched, that prune was relocated into finish()). Regression guard for the #2
-// prune relocation: pre-relocation Cancel pruned recovered write jobs too.
+// TestCancelRecoveredRunningWriteJobPrunes: owner-scoped reconcile claims a
+// dead-owner running write job as failed and prunes its worktree during
+// reconcile (the job is never put into the in-memory registry, so Cancel is
+// not called for it). This test verifies the reconcile-side prune behavior.
 func TestCancelRecoveredRunningWriteJobPrunes(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
-	fresh := clock.Add(-time.Second) // within StaleThreshold -> recovered as running
+	fresh := clock.Add(-time.Second)
 
 	prior := []model.JobRecord{
 		{JobID: "rec-w", Status: model.JobRunning, Mode: model.ModeWrite,
 			CWD: "/wt", RunsDir: "/wt/runs", WorktreePath: "/wt", Branch: "pi-mcp/job-rec-w",
 			StartedAt: fresh},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead owner
 
 	fp := &fakePruner{}
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
@@ -191,25 +190,21 @@ func TestCancelRecoveredRunningWriteJobPrunes(t *testing.T) {
 	if _, err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if got, _ := r.Lookup("rec-w"); got.Status != model.JobRunning {
-		t.Fatalf("precondition: recovered job should be running, got %q", got.Status)
-	}
-	if fp.callCount() != 0 {
-		t.Fatalf("precondition: reconcile must not prune a live worktree, got %d", fp.callCount())
-	}
-
-	out, err := r.Cancel("rec-w")
-	if err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if out.Status != model.JobAborted {
-		t.Fatalf("want aborted, got %q", out.Status)
+	// Owner-scoped reconcile claims the dead-owner running write job as failed
+	// and prunes its worktree. The job is NOT loaded into memory.
+	if got, _ := r.Lookup("rec-w"); got.Status != "" {
+		t.Fatalf("dead-owner job must NOT be in memory after reconcile, got %q", got.Status)
 	}
 	if fp.callCount() != 1 {
-		t.Fatalf("recovered running write job must prune once on cancel, got %d", fp.callCount())
+		t.Fatalf("reconcile must prune dead-owner write job's worktree once, got %d", fp.callCount())
 	}
 	if fp.calls[0].Worktree != "/wt" || fp.calls[0].Branch != "pi-mcp/job-rec-w" {
 		t.Fatalf("prune args wrong: %+v", fp.calls[0])
+	}
+	// Persisted record is claimed failed.
+	recs := readBackJobs(t, persistPath)
+	if len(recs) != 1 || recs[0].Status != model.JobFailed {
+		t.Fatalf("persisted record should be failed, got %+v", recs)
 	}
 }
 

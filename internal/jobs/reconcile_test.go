@@ -11,6 +11,51 @@ import (
 	"pi-mcp/internal/model"
 )
 
+func TestReconcile_OwnerScoped(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "registry.db")
+	// Seed the DB directly: one DEAD-owner running write job, one LIVE-owner (self) running job.
+	seed, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadWrite := model.JobRecord{JobID: "dead1", Mode: model.ModeWrite, CWD: "/c",
+		RunsDir: "/c/r", WorktreePath: "/wt/job-dead1", Branch: "pi-mcp/job-dead1",
+		Status: model.JobRunning, StartedAt: timeNowUTC()}
+	_ = seed.UpsertJobs([]model.JobRecord{deadWrite}, 999999, "old") // pid 999999 = not alive
+	liveRead := model.JobRecord{JobID: "live1", Mode: model.ModeRead, CWD: "/c",
+		RunsDir: "/c/r", Status: model.JobRunning, StartedAt: timeNowUTC()}
+	_ = seed.UpsertJobs([]model.JobRecord{liveRead}, os.Getpid(), "self") // self pid = alive
+	seed.Close()
+
+	pruner := &fakePruner{}
+	r, err := NewRegistry(Config{Cap: 4, PersistPath: dbPath, WorktreeRoot: dir}, newFakeLauncher("s"), &fakeCorrelator{}, pruner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	recs := readBackJobs(t, dbPath)
+	m := map[string]model.JobRecord{}
+	for _, x := range recs {
+		m[x.JobID] = x
+	}
+	if string(m["dead1"].Status) != "failed" {
+		t.Errorf("dead-owner job: status=%q want failed", m["dead1"].Status)
+	}
+	if string(m["live1"].Status) != "running" {
+		t.Errorf("live-owner job MUST be untouched: status=%q want running", m["live1"].Status)
+	}
+	// dead-owner write job's worktree IS pruned; live owner's is NOT.
+	if !pruner.prunedBranch("pi-mcp/job-dead1") {
+		t.Errorf("dead-owner worktree should be pruned; pruned=%v", pruner.branches())
+	}
+}
+
 // seedDB seeds records into a SQLite DB at dbPath (creates it), using ownerPid
 // and ownerStartedAt for the ownership stamp. Use ownerPid=0 for "dead owner".
 func seedDB(t *testing.T, dbPath string, recs []model.JobRecord, ownerPid int, ownerStartedAt string) {
@@ -34,19 +79,22 @@ func writeWorktreeDir(t *testing.T, root, jobID string) string {
 	return p
 }
 
+// TestReconcileMarksStaleRunningFailed: a dead-owner running job is claimed
+// terminal (failed/SERVER_RESTARTED) in the DB by owner-scoped reconcile.
+// The staleness of the job is irrelevant — dead owner is enough.
 func TestReconcileMarksStaleRunningFailed(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
 
-	// Seed a running job whose StartedAt is far in the past (post-restart, no
-	// live updatedAt, so reconcile compares against StartedAt).
+	// Seed a running job with a dead owner (pid=0). Owner-scoped reconcile will
+	// claim it terminal regardless of start time.
 	stale := clock.Add(-config.StaleThreshold - time.Hour)
 	prior := []model.JobRecord{
 		{JobID: "old", Status: model.JobRunning, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", PID: 2147483646, StartedAt: stale},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead owner
 
 	fp := &fakePruner{}
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
@@ -60,20 +108,15 @@ func TestReconcileMarksStaleRunningFailed(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected reconcile count 1, got %d", n)
 	}
-	got, ok := r.Lookup("old")
-	if !ok {
-		t.Fatal("reconciled job missing")
-	}
-	if got.Status != model.JobFailed {
-		t.Fatalf("stale running should reconcile to failed, got %q", got.Status)
-	}
-	// Persisted DB updated too.
+	// Persisted DB updated to failed.
 	recs := readBackJobs(t, persistPath)
-	if recs[0].Status != model.JobFailed {
-		t.Fatalf("persisted reconciled status wrong: %q", recs[0].Status)
+	if len(recs) != 1 || recs[0].Status != model.JobFailed {
+		t.Fatalf("persisted reconciled status wrong: %+v", recs)
 	}
 }
 
+// TestReconcileKeepsTerminalRecords: a dead-owner terminal job is never touched
+// by owner-scoped reconcile (terminal rows are always skipped).
 func TestReconcileKeepsTerminalRecords(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
@@ -81,28 +124,29 @@ func TestReconcileKeepsTerminalRecords(t *testing.T) {
 		{JobID: "done", Status: model.JobCompleted, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", StartedAt: time.Unix(1, 0)},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead, but terminal -> skipped
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return time.Unix(9_000_000, 0) }},
 		newFakeLauncher("s"), &fakeCorrelator{}, &fakePruner{})
 	if _, err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	got, _ := r.Lookup("done")
-	if got.Status != model.JobCompleted {
-		t.Fatalf("terminal record must be preserved, got %q", got.Status)
+	// Terminal record must stay completed in the DB.
+	recs := readBackJobs(t, persistPath)
+	if len(recs) != 1 || recs[0].Status != model.JobCompleted {
+		t.Fatalf("terminal record must be preserved, got %+v", recs)
 	}
 }
 
-// FIX #6: a recovered running job with a sessionId but no runId resumes its
-// correlation via the correlator (one-shot, non-blocking) and stays running; a
-// recovered queued job is terminalized to failed/SERVER_RESTARTED (it cannot be
-// relaunched because Task/Context are not persisted) and is NOT kept live.
-func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
+// TestReconcileTerminalizesDeadOwnerNonTerminal: owner-scoped reconcile claims
+// both a dead-owner running job AND a dead-owner queued job as failed
+// (SERVER_RESTARTED). There is no correlation resume in the new reconcile
+// (that was part of the old in-memory-load path which is now removed).
+func TestReconcileTerminalizesDeadOwnerNonTerminal(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
-	fresh := clock.Add(-time.Second) // stays running (not stale)
+	fresh := clock.Add(-time.Second)
 
 	prior := []model.JobRecord{
 		{JobID: "run1", Status: model.JobRunning, Mode: model.ModeRead,
@@ -111,37 +155,34 @@ func TestReconcileResumesCorrelationAndTerminalizesQueued(t *testing.T) {
 		{JobID: "q1", Status: model.JobQueued, Mode: model.ModeRead,
 			CWD: "/p", RunsDir: "/p/runs", StartedAt: fresh},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead owner
 
-	fc := &fakeCorrelator{table: map[string]string{"sess-1": "run-resolved"}}
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
-		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
+		Now: func() time.Time { return clock }}, newFakeLauncher("s"),
+		&fakeCorrelator{table: map[string]string{"sess-1": "run-resolved"}}, &fakePruner{})
 
 	if _, err := r.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	got, _ := r.Lookup("run1")
-	if got.Status != model.JobRunning {
-		t.Fatalf("running job should stay running, got %q", got.Status)
+	recs := readBackJobs(t, persistPath)
+	m := map[string]model.JobRecord{}
+	for _, x := range recs {
+		m[x.JobID] = x
 	}
-	if got.RunID != "run-resolved" {
-		t.Fatalf("running job runID should resume to %q, got %q", "run-resolved", got.RunID)
+	if m["run1"].Status != model.JobFailed {
+		t.Errorf("dead-owner running job should be failed, got %q", m["run1"].Status)
 	}
-
-	gotQ, _ := r.Lookup("q1")
-	if gotQ.Status != model.JobFailed {
-		t.Fatalf("recovered queued job should be failed, got %q", gotQ.Status)
-	}
-	if gotQ.ErrorCode != config.ErrServerRestarted {
-		t.Fatalf("recovered queued job should carry %q, got %q", config.ErrServerRestarted, gotQ.ErrorCode)
+	if m["q1"].Status != model.JobFailed {
+		t.Errorf("dead-owner queued job should be failed, got %q", m["q1"].Status)
 	}
 }
 
-// FIX #6 guards: a recovered running job that ALREADY has a runId keeps it (the
-// correlator is not consulted/overwritten); a running job with a sessionId whose
-// correlator returns not-found keeps RunID "".
-func TestReconcileCorrelationGuards(t *testing.T) {
+// TestReconcileDeadOwnerClaimsAllNonTerminal: owner-scoped reconcile claims all
+// dead-owner non-terminal jobs as failed; the correlator is never consulted
+// (reconcile no longer does in-memory correlation). Existing field values like
+// RunID are preserved in DB since ClaimTerminal only updates status/errorCode.
+func TestReconcileDeadOwnerClaimsAllNonTerminal(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
 	clock := time.Unix(5_000_000, 0)
@@ -155,10 +196,8 @@ func TestReconcileCorrelationGuards(t *testing.T) {
 			CWD: "/p", RunsDir: "/p/runs", SessionID: "sess-b", RunID: "",
 			StartedAt: fresh},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead owner
 
-	// Correlator would resolve sess-a if consulted (it must NOT be), and returns
-	// not-found for sess-b.
 	fc := &fakeCorrelator{table: map[string]string{"sess-a": "should-not-apply"}}
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
 		Now: func() time.Time { return clock }}, newFakeLauncher("s"), fc, &fakePruner{})
@@ -167,39 +206,53 @@ func TestReconcileCorrelationGuards(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	gotA, _ := r.Lookup("has-run")
-	if gotA.RunID != "already" {
-		t.Fatalf("existing runID must be preserved, got %q", gotA.RunID)
+	recs := readBackJobs(t, persistPath)
+	m := map[string]model.JobRecord{}
+	for _, x := range recs {
+		m[x.JobID] = x
 	}
-	gotB, _ := r.Lookup("no-match")
-	if gotB.RunID != "" {
-		t.Fatalf("unmatched session must keep empty runID, got %q", gotB.RunID)
+	// Both dead-owner running jobs are claimed failed.
+	if m["has-run"].Status != model.JobFailed {
+		t.Errorf("has-run: want failed, got %q", m["has-run"].Status)
 	}
-	if gotB.Status != model.JobRunning {
-		t.Fatalf("unmatched running job should stay running, got %q", gotB.Status)
+	if m["no-match"].Status != model.JobFailed {
+		t.Errorf("no-match: want failed, got %q", m["no-match"].Status)
 	}
 }
 
-func TestReconcileGCsOrphanWorktrees(t *testing.T) {
+// TestReconcileDeadOwnerWriteWorktreePruned: owner-scoped reconcile prunes the
+// worktree of a dead-owner running write job. Terminal dead-owner jobs and
+// live-owner jobs are NOT pruned (write mode with no WorktreePath also skipped).
+func TestReconcileDeadOwnerWriteWorktreePruned(t *testing.T) {
 	dir := t.TempDir()
 	persistPath := filepath.Join(dir, "registry.db")
 
-	// Worktree on disk for a job that has NO record at all -> orphan -> pruned.
-	orphan := writeWorktreeDir(t, dir, "ghost")
-	// Worktree for a job with a TERMINAL record -> also an orphan -> pruned.
 	termWT := writeWorktreeDir(t, dir, "donewrite")
-	// Worktree for a LIVE (running, fresh) record -> kept (not pruned).
+	deadWT := writeWorktreeDir(t, dir, "deadwrite")
 	liveWT := writeWorktreeDir(t, dir, "alive")
 
 	clock := time.Unix(7_000_000, 0)
+	// donewrite: terminal, dead owner -> skipped (terminal rows never touched).
+	// deadwrite: running, dead owner -> claimed + pruned.
+	// alive:     running, live owner (self) -> untouched.
 	prior := []model.JobRecord{
 		{JobID: "donewrite", Status: model.JobCompleted, Mode: model.ModeWrite,
 			WorktreePath: termWT, Branch: "pi-mcp/job-donewrite", StartedAt: time.Unix(1, 0)},
+		{JobID: "deadwrite", Status: model.JobRunning, Mode: model.ModeWrite,
+			WorktreePath: deadWT, Branch: "pi-mcp/job-deadwrite",
+			StartedAt: clock.Add(-time.Second)},
 		{JobID: "alive", Status: model.JobRunning, Mode: model.ModeWrite,
 			WorktreePath: liveWT, Branch: "pi-mcp/job-alive",
-			StartedAt: clock.Add(-time.Second)}, // fresh -> stays running
+			StartedAt: clock.Add(-time.Second)},
 	}
-	seedDB(t, persistPath, prior, 0, "")
+	// donewrite + deadwrite owned by dead pid; alive owned by self (live).
+	seed, err := OpenStore(persistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = seed.UpsertJobs(prior[:2], 0, "") // dead owner
+	_ = seed.UpsertJobs(prior[2:], os.Getpid(), "self")
+	seed.Close()
 
 	fp := &fakePruner{}
 	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
@@ -209,23 +262,18 @@ func TestReconcileGCsOrphanWorktrees(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// ghost + donewrite pruned; alive kept.
 	pruned := map[string]bool{}
 	for _, c := range fp.calls {
 		pruned[c.Branch] = true
 	}
-	if !pruned["pi-mcp/job-ghost"] {
-		t.Errorf("orphan ghost worktree should be pruned; calls=%+v", fp.calls)
+	// Only the dead-owner non-terminal write job is pruned.
+	if !pruned["pi-mcp/job-deadwrite"] {
+		t.Errorf("dead-owner write job worktree should be pruned; calls=%+v", fp.calls)
 	}
-	if !pruned["pi-mcp/job-donewrite"] {
-		t.Errorf("terminal-job worktree should be pruned; calls=%+v", fp.calls)
+	if pruned["pi-mcp/job-donewrite"] {
+		t.Errorf("terminal job worktree must NOT be pruned; calls=%+v", fp.calls)
 	}
 	if pruned["pi-mcp/job-alive"] {
-		t.Errorf("live job worktree must NOT be pruned; calls=%+v", fp.calls)
-	}
-
-	// Sanity: orphan dir actually existed.
-	if _, err := os.Stat(orphan); err != nil {
-		t.Fatalf("orphan dir vanished unexpectedly: %v", err)
+		t.Errorf("live-owner job worktree must NOT be pruned; calls=%+v", fp.calls)
 	}
 }
