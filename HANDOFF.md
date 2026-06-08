@@ -50,6 +50,14 @@ Each fixed on `build/impl` with a regression test; full `-race` gate green.
 6. **Reconcile didn't resume correlation / recovered queued stuck (`reconcile.go`).** ✅ Recovered queued → `failed`+`SERVER_RESTARTED` (new `config.ErrServerRestarted`); stale running gets a recovery code (without clobbering a real engine code); fresh running with sessionId & no runId gets a one-shot `RunIDForSession` resume. Tests: `TestReconcileResumesCorrelationAndTerminalizesQueued`, `TestReconcileCorrelationGuards`.
 7. **Ignored initial persistence error (`registry.go`).** ✅ The first Submit flush is now mandatory: on failure it rolls back admission (slot/queue/ctx) under the same lock and returns `PERSISTENCE_ERROR`; the job is never silently accepted. Test: `TestSubmitPersistFailureRollsBack`. (Later flushes in start/correlate/finish stay best-effort — noted in code.)
 
+### ✅ Observability / false-failure (the `d129db4c` incident — FIXED)
+A live write-mode job looked "stuck for 15 min / no response". Root cause (a *new* issue, not one of the 7): pi authors the workflow for minutes (blind window, no run file), then does write-mode work by **editing the worktree directly** — so the run file's `updatedAt` freezes while the job is alive. The liveness heuristic (`liveStatus`) then flips it to a **false `failed`** at the 300s staleness threshold (prod `pidAlive` is a `return true` stub, so staleness is the only death signal). Fixes:
+- `liveStatus` takes a `worktreeActive` signal: a write job whose worktree was modified within `StaleThreshold` is NOT failed by run-file staleness (a confirmed-dead PID still wins). A genuinely wedged write job (worktree quiet >300s) still surfaces `failed`.
+- New non-mutating `JobsService.WorktreeActivity` (file count + newest mtime; skips `.git`/`.pi`; works for recovered jobs via the registry record) — distinct from `WriteInfoFor`, no `git add -A`.
+- `pi_status` now returns a `progress` heartbeat (`elapsed_seconds`, plus `worktree_files`/`last_activity_seconds` for write jobs) on running/blind jobs, so a slow-but-working job is never an opaque silence and a real wedge is distinguishable. Tests: `TestStatus_WriteActiveWorktreeNotFalselyFailed`, `…WriteStaleWorktreeStillFails`, `…BlindWindowHasElapsedHeartbeat`, `TestLiveStatus_WorktreeActivityOverridesStaleness`, `TestScanWorktreeActivity`.
+
+Still open (offered, not done): wiring a real `pidAlive` (currently a stub) and logging the ~11 silenced `flush`/`Prune` errors in `internal/jobs`.
+
 ### MED (still open)
 - Registry holds `r.mu` during fsync persistence and during run-file correlation scan → stalls Submit/Cancel/Lookup under a slow FS (`registry.go`, `runstore/lookup.go`).
 - `persist.go`: no parent-dir fsync after rename; no `.bak`/WAL; corrupt registry has no recovery path.

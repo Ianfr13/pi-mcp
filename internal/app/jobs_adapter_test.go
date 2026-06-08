@@ -169,3 +169,41 @@ func TestSubmit_WriteOnNonGitRepoReturnsErrNotAGitRepo(t *testing.T) {
 		t.Fatalf("error = %q, want it to contain NOT_A_GIT_REPO", err.Error())
 	}
 }
+
+// scanWorktreeActivity must count regular files while skipping the .git and .pi
+// bookkeeping dirs, and report the newest agent-written file's mtime.
+func TestScanWorktreeActivity(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string, mod time.Time) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	mk("go.mod", base.Add(1*time.Minute))
+	mk("internal/store/store.go", base.Add(2*time.Minute))   // newest agent file
+	mk(".git/HEAD", base.Add(10*time.Minute))                // must be ignored
+	mk(".pi/workflows/runs/r.json", base.Add(9*time.Minute)) // must be ignored
+
+	files, newest := scanWorktreeActivity(root)
+	if files != 2 {
+		t.Fatalf("want 2 agent files (excluding .git/.pi), got %d", files)
+	}
+	if want := base.Add(2 * time.Minute); !newest.Equal(want) {
+		t.Fatalf("newest mtime = %v, want %v (must ignore .git/.pi churn)", newest, want)
+	}
+}
+
+func TestScanWorktreeActivity_Empty(t *testing.T) {
+	files, newest := scanWorktreeActivity(filepath.Join(t.TempDir(), "does-not-exist"))
+	if files != 0 || !newest.IsZero() {
+		t.Fatalf("absent worktree must yield (0, zero), got (%d, %v)", files, newest)
+	}
+}

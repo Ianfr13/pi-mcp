@@ -430,6 +430,102 @@ func TestStatus_FailureMessageFallsBackToErrorCode(t *testing.T) {
 	}
 }
 
+// --- Observability: write job with a stale run file but an ACTIVE worktree ---
+// (root cause of the d129db4c "no response" incident: pi edits the worktree
+// directly, the run file freezes, and staleness falsely flips it to failed.)
+
+func TestStatus_WriteActiveWorktreeNotFalselyFailed(t *testing.T) {
+	now := mustTime("2026-06-08T12:00:00Z")
+	staleUpd := now.Add(-(config.StaleThreshold + time.Minute)) // run file frozen 6 min ago
+	startedAt := now.Add(-15 * time.Minute)                     // job running 15 min
+	recentWt := now.Add(-30 * time.Second)                      // worktree touched 30s ago
+
+	run := buildRun()
+	run.Status = "paused" // non-terminal disk status, run file not advancing
+	run.Result = nil
+	run.TokenUsage = nil
+	run.UpdatedAt = &staleUpd
+
+	j := newFakeJobs()
+	j.lookup["job-wa"] = model.JobRecord{
+		JobID: "job-wa", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeWrite, PID: 4242,
+		Status: model.JobRunning, WorktreePath: "/wt/job-wa", Branch: "pi-mcp/job-job-wa",
+		StartedAt: startedAt,
+	}
+	j.activity["job-wa"] = wtActivity{files: 56, lastModified: recentWt, ok: true}
+	store := newFakeStore()
+	store.runs["/runs/"+run.RunID] = run
+	srv := New(j, store)
+	srv.now = func() time.Time { return now }
+
+	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-wa"})
+	if out.Status != "running" {
+		t.Fatalf("active worktree must keep the job running, got %q (false-failure regression)", out.Status)
+	}
+	if out.Progress == nil {
+		t.Fatalf("expected a progress heartbeat for a running job")
+	}
+	if out.Progress.WorktreeFiles != 56 {
+		t.Fatalf("want 56 worktree files, got %d", out.Progress.WorktreeFiles)
+	}
+	if out.Progress.ElapsedSeconds != 900 {
+		t.Fatalf("want elapsed 900s, got %d", out.Progress.ElapsedSeconds)
+	}
+	if out.Progress.LastActivitySeconds == nil || *out.Progress.LastActivitySeconds != 30 {
+		t.Fatalf("want last_activity 30s, got %v", out.Progress.LastActivitySeconds)
+	}
+}
+
+func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
+	// A write job whose run file is stale AND whose worktree is NOT changing is
+	// genuinely wedged/dead -> staleness still applies (no false liveness).
+	now := mustTime("2026-06-08T12:00:00Z")
+	staleUpd := now.Add(-(config.StaleThreshold + time.Minute))
+
+	run := buildRun()
+	run.Status = "running"
+	run.Result = nil
+	run.TokenUsage = nil
+	run.UpdatedAt = &staleUpd
+
+	j := newFakeJobs()
+	j.lookup["job-ws"] = model.JobRecord{
+		JobID: "job-ws", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeWrite, PID: 1,
+		Status: model.JobRunning, WorktreePath: "/wt/job-ws", Branch: "b", StartedAt: now.Add(-10 * time.Minute),
+	}
+	// worktree last modified long ago -> not active
+	j.activity["job-ws"] = wtActivity{files: 3, lastModified: staleUpd, ok: true}
+	store := newFakeStore()
+	store.runs["/runs/"+run.RunID] = run
+	srv := New(j, store)
+	srv.now = func() time.Time { return now }
+
+	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ws"})
+	if out.Status != "failed" {
+		t.Fatalf("stale run file + inactive worktree must fail, got %q", out.Status)
+	}
+}
+
+func TestStatus_BlindWindowHasElapsedHeartbeat(t *testing.T) {
+	now := mustTime("2026-06-08T12:00:00Z")
+	j := newFakeJobs()
+	j.lookup["job-bh"] = model.JobRecord{
+		JobID: "job-bh", RunsDir: "/runs", RunID: "", Status: model.JobRunning, PID: 4242,
+		StartedAt: now.Add(-9 * time.Minute), // long authoring blind window
+	}
+	store := newFakeStore() // empty -> blind window
+	srv := New(j, store)
+	srv.now = func() time.Time { return now }
+
+	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-bh"})
+	if out.Status != "running" || !out.BlindWindow {
+		t.Fatalf("want running/blind, got %+v", out)
+	}
+	if out.Progress == nil || out.Progress.ElapsedSeconds != 540 {
+		t.Fatalf("blind window must carry an elapsed heartbeat (540s), got %+v", out.Progress)
+	}
+}
+
 // --- Fix #3: pi_status must not stage/diff a still-running write worktree ---
 
 func TestStatus_WriteRunningDoesNotStage(t *testing.T) {

@@ -17,8 +17,16 @@ type fakeJobs struct {
 	cancelRec model.JobRecord
 	cancelErr error
 	writeInfo map[string]model.WriteInfo // jobID -> write info
+	activity  map[string]wtActivity      // jobID -> worktree activity
 
 	lastSpec JobSpec // captured for assertions
+}
+
+// wtActivity scripts a fakeJobs.WorktreeActivity return.
+type wtActivity struct {
+	files        int
+	lastModified time.Time
+	ok           bool
 }
 
 func newFakeJobs() *fakeJobs {
@@ -26,6 +34,7 @@ func newFakeJobs() *fakeJobs {
 		lookup:    map[string]model.JobRecord{},
 		byRun:     map[string]model.JobRecord{},
 		writeInfo: map[string]model.WriteInfo{},
+		activity:  map[string]wtActivity{},
 	}
 }
 
@@ -45,6 +54,13 @@ func (f *fakeJobs) Cancel(string) (model.JobRecord, error) { return f.cancelRec,
 func (f *fakeJobs) WriteInfoFor(jobID string) (model.WriteInfo, bool) {
 	wi, ok := f.writeInfo[jobID]
 	return wi, ok
+}
+func (f *fakeJobs) WorktreeActivity(jobID string) (int, time.Time, bool) {
+	a, ok := f.activity[jobID]
+	if !ok {
+		return 0, time.Time{}, false
+	}
+	return a.files, a.lastModified, a.ok
 }
 
 // fakeStore implements RunStore. runs is keyed by runsDir+"/"+runID.

@@ -67,6 +67,7 @@ type resolved struct {
 	worktree     string
 	branch       string
 	jobStatus    model.JobStatus // JobRecord.Status (terminal -> surface even with no run file)
+	startedAt    time.Time       // JobRecord.StartedAt (elapsed-time heartbeat)
 	errorMessage string          // JobRecord.ErrorMessage (§9 extraction order #1)
 	errorCode    string          // JobRecord.ErrorCode
 }
@@ -81,7 +82,8 @@ func (s *Server) resolveTarget(in model.StatusInput) (resolved, error) {
 		return resolved{
 			runsDir: rec.RunsDir, runID: rec.RunID, jobID: rec.JobID, mode: rec.Mode,
 			pid: rec.PID, hasJob: true, worktree: rec.WorktreePath, branch: rec.Branch,
-			jobStatus: rec.Status, errorMessage: rec.ErrorMessage, errorCode: rec.ErrorCode,
+			jobStatus: rec.Status, startedAt: rec.StartedAt,
+			errorMessage: rec.ErrorMessage, errorCode: rec.ErrorCode,
 		}, nil
 	}
 	if in.RunID == "" || in.CWD == "" {
@@ -95,7 +97,7 @@ func (s *Server) resolveTarget(in model.StatusInput) (resolved, error) {
 	if rec, ok := s.jobs.LookupByRun(in.RunID, cwd); ok {
 		r.jobID, r.mode, r.pid, r.hasJob = rec.JobID, rec.Mode, rec.PID, true
 		r.worktree, r.branch = rec.WorktreePath, rec.Branch
-		r.jobStatus = rec.Status
+		r.jobStatus, r.startedAt = rec.Status, rec.StartedAt
 		r.errorMessage, r.errorCode = rec.ErrorMessage, rec.ErrorCode
 		if rec.RunsDir != "" {
 			r.runsDir = rec.RunsDir
@@ -126,6 +128,15 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	out := model.StatusOutput{JobID: tgt.jobID}
 
+	// Non-mutating worktree liveness/progress (write jobs only): a write job that
+	// edits files directly leaves the run file frozen while it works, so a recently
+	// modified worktree is the authoritative "still alive" signal.
+	wtFiles, wtLast, wtOK := 0, time.Time{}, false
+	if tgt.mode == model.ModeWrite && tgt.hasJob {
+		wtFiles, wtLast, wtOK = s.jobs.WorktreeActivity(tgt.jobID)
+	}
+	worktreeActive := wtOK && !s.now().Before(wtLast) && s.now().Sub(wtLast) <= config.StaleThreshold
+
 	run, err := s.store.Load(tgt.runsDir, tgt.runID)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
@@ -143,12 +154,15 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 					}
 					return out
 				}
-				// owning job exists but run file absent -> blind window
+				// owning job exists but run file absent -> blind window (pi is still
+				// authoring the workflow). Surface an elapsed heartbeat so a long
+				// authoring phase is never an opaque silence.
 				out.Status = "running"
 				out.BlindWindow = true
 				if tgt.mode == model.ModeWrite {
 					out.Write = s.writeBlock(tgt, nil)
 				}
+				out.Progress = s.progressBlock(tgt, wtFiles, wtLast, wtOK)
 				return out
 			}
 			// runId path for a run that does not exist yet -> queued/pending, NOT an error
@@ -169,7 +183,7 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	}
 
 	diskStatus := mapDiskStatus(run.Status)
-	out.Status = liveStatus(run.Status, run.UpdatedAt, s.now(), s.pidIsAlive(tgt))
+	out.Status = liveStatus(run.Status, run.UpdatedAt, s.now(), s.pidIsAlive(tgt), worktreeActive)
 	out.Intermediate = buildIntermediate(run, config.MaxInlineResultBytes)
 	out.Metadata = buildMetadata(run)
 
@@ -203,7 +217,29 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 			out.Write = s.writeBlock(tgt, run)
 		}
 	}
+
+	// Heartbeat for a still-running job: elapsed time + (write) worktree activity,
+	// so callers can tell a slow-but-working job from a wedged one.
+	if !isTerminal(out.Status) {
+		out.Progress = s.progressBlock(tgt, wtFiles, wtLast, wtOK)
+	}
 	return out
+}
+
+// progressBlock builds the elapsed-time heartbeat plus, for write jobs, the
+// worktree file count and the age of the newest change. Returns nil when there is
+// no owning job / no start time (e.g. the runId path for an external run).
+func (s *Server) progressBlock(tgt resolved, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
+	if !tgt.hasJob || tgt.startedAt.IsZero() {
+		return nil
+	}
+	p := &model.Progress{ElapsedSeconds: int64(s.now().Sub(tgt.startedAt).Seconds())}
+	if wtOK {
+		p.WorktreeFiles = wtFiles
+		la := int64(s.now().Sub(wtLast).Seconds())
+		p.LastActivitySeconds = &la
+	}
+	return p
 }
 
 // writeBlock emits a NON-mutating write block: branch always, worktree only when

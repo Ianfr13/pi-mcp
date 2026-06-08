@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"pi-mcp/internal/config"
 	"pi-mcp/internal/jobs"
@@ -117,4 +119,51 @@ func (a *jobsAdapter) WriteInfoFor(jobID string) (model.WriteInfo, bool) {
 		return model.WriteInfo{}, false
 	}
 	return wi, true
+}
+
+// WorktreeActivity walks the write job's worktree (NON-mutating — no git add -A,
+// unlike WriteInfoFor) and reports how many agent-written files it contains and
+// the most recent modification time. This is the liveness/progress signal for a
+// write job that edits files directly (its run file goes stale while it works).
+// It resolves the worktree path from the registry record, so it works for jobs
+// recovered after a restart too (no in-memory handle required). ok=false for
+// unknown or non-write jobs, or when the worktree has no files yet.
+func (a *jobsAdapter) WorktreeActivity(jobID string) (int, time.Time, bool) {
+	rec, ok := a.reg.Lookup(jobID)
+	if !ok || rec.Mode != model.ModeWrite || rec.WorktreePath == "" {
+		return 0, time.Time{}, false
+	}
+	files, newest := scanWorktreeActivity(rec.WorktreePath)
+	if files == 0 {
+		return 0, time.Time{}, false
+	}
+	return files, newest, true
+}
+
+// scanWorktreeActivity counts regular files under root and returns the newest
+// mtime, skipping the .git and .pi bookkeeping dirs (which churn independently of
+// the agent's work). Errors are swallowed: a partial walk still yields a useful
+// liveness signal, and a missing worktree simply yields (0, zero time).
+func scanWorktreeActivity(root string) (files int, newest time.Time) {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries; keep walking
+		}
+		if d.IsDir() {
+			if name := d.Name(); path != root && (name == ".git" || name == ".pi") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		files++
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return files, newest
 }
