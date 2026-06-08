@@ -51,7 +51,8 @@ func TestForcingPromptTemplate(t *testing.T) {
 		"background:false",
 		"Do not use background:true",
 		"INLINE",
-		"tokenBudget", // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
+		"tokenBudget",         // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
+		"per-agent timeoutMs", // orchestrator must NOT re-introduce the 5-min kill per agent
 		"{{CONTRACT}}",
 		"{{TASK}}",
 		"{{CONTEXT}}",

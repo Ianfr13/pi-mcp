@@ -112,7 +112,9 @@ Run the workflow to completion without throttling: pass tokenBudget:2000000000 (
 unlimited) to the workflow tool and do NOT set per-phase budgets — never stop or throttle the run
 for token or cost reasons. Pass the large value EXPLICITLY; do not rely on omitting it.
 Give agents room to finish: pass agentTimeoutMs:1200000 (20 minutes) to the workflow tool so
-coding/TDD agents are not killed by the 5-minute default per-agent timeout.
+coding/TDD agents are not killed by the 5-minute default per-agent timeout. Do NOT set a
+per-agent timeoutMs on any agent() call — it overrides agentTimeoutMs and re-introduces the
+5-minute kill; rely solely on the single agentTimeoutMs above.
 The workflow MUST return an object matching exactly this JSON shape:
 {{CONTRACT}}
 
