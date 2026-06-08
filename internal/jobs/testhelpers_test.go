@@ -141,6 +141,39 @@ func (f *blockingWaitLauncher) Launch(ctx context.Context, spec Spec) (int, <-ch
 
 func (f *blockingWaitLauncher) releaseAll() { close(f.release) }
 
+// seqLauncher returns a programmed sequence of wait() errors across successive
+// Launch calls; wait() returns immediately (no release gate) and no session id is
+// emitted (so correlate resolves nothing -> RunID stays "" -> the authoring-retry
+// path is taken). It honors ctx at spawn. For retry tests.
+type seqLauncher struct {
+	mu       sync.Mutex
+	waitErrs []error
+	launches int
+}
+
+func (s *seqLauncher) Launch(ctx context.Context, _ Spec) (int, <-chan string, func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, nil, err
+	}
+	s.mu.Lock()
+	i := s.launches
+	s.launches++
+	var werr error
+	if i < len(s.waitErrs) {
+		werr = s.waitErrs[i]
+	}
+	s.mu.Unlock()
+	ch := make(chan string, 1)
+	close(ch) // no session id -> correlate returns immediately, RunID ""
+	return 4242, ch, func() error { return werr }, nil
+}
+
+func (s *seqLauncher) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.launches
+}
+
 // fakeCorrelator maps sessionID -> runID from a fixed table.
 type fakeCorrelator struct {
 	table map[string]string // sessionID -> runID

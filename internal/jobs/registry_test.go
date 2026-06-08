@@ -101,6 +101,7 @@ func TestSubmitWaitErrorMarksFailed(t *testing.T) {
 	fl.waitErr = errFake
 	fc := &fakeCorrelator{table: map[string]string{"sess-B": "run-B"}}
 	r := NewRegistry(Config{Cap: 4, PersistPath: filepath.Join(dir, "r.json")}, fl, fc, &fakePruner{})
+	r.hasRunFile = func(string) bool { return true } // fleet ran -> a wait error is NOT retried
 
 	rec, err := r.Submit(context.Background(), Spec{Mode: "read", CWD: "/p", RunsDir: "/p/runs"})
 	if err != nil {

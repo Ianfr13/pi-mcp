@@ -19,6 +19,9 @@ func TestConstants(t *testing.T) {
 	if WaitCap != 60*time.Second {
 		t.Errorf("WaitCap = %v, want 60s", WaitCap)
 	}
+	if MaxAuthoringRetries != 2 {
+		t.Errorf("MaxAuthoringRetries = %d, want 2", MaxAuthoringRetries)
+	}
 }
 
 func TestPiInvocation(t *testing.T) {

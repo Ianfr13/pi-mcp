@@ -21,6 +21,14 @@ const (
 // treated as crashed (post-restart liveness override). 300s == DefaultAgentTimeoutMs.
 const StaleThreshold = 300 * time.Second
 
+// MaxAuthoringRetries is how many EXTRA times pi-mcp relaunches pi when a job
+// fails BEFORE any run file is created (the workflow never started — e.g. the
+// orchestrator authored an invalid script). Retrying is cheap (the agent fleet
+// never ran) and usually succeeds because authoring is non-deterministic. A
+// failure AFTER a run file exists (the fleet ran) is NOT retried. 2 -> up to 3
+// total attempts.
+const MaxAuthoringRetries = 2
+
 // WaitCap bounds pi_status long-poll (injectable for tests).
 const WaitCap = 60 * time.Second
 
