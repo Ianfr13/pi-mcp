@@ -45,6 +45,7 @@ func TestForcingPromptTemplate(t *testing.T) {
 		"background:false",
 		"Do not use background:true",
 		"INLINE",
+		"tokenBudget", // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
 		"{{CONTRACT}}",
 		"{{TASK}}",
 		"{{CONTEXT}}",

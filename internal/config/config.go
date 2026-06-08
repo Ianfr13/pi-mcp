@@ -85,6 +85,9 @@ const MaxInlineResultBytes = 16 * 1024
 const ForcingPromptTemplate = `You MUST make exactly ONE call to the ` + "`workflow`" + ` tool with background:false. Do not answer
 directly. Do not use background:true. Return the final synthesized result INLINE this turn.
 Decompose the task as you see fit and fan out subagents in parallel.
+Run the workflow to completion with NO token budget: do NOT pass tokenBudget to the workflow
+tool (leave it unlimited) and do NOT set per-phase budgets — never stop or throttle the run for
+token or cost reasons.
 The workflow MUST return an object matching exactly this JSON shape:
 {{CONTRACT}}
 
