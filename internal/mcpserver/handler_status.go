@@ -128,14 +128,18 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	out := model.StatusOutput{JobID: tgt.jobID}
 
+	now := s.now() // capture once so the skew math and heartbeat agree
+
 	// Non-mutating worktree liveness/progress (write jobs only): a write job that
 	// edits files directly leaves the run file frozen while it works, so a recently
-	// modified worktree is the authoritative "still alive" signal.
+	// modified worktree is the authoritative "still alive" signal. A future mtime
+	// (clock skew on a networked FS) is even more recent, so age<=threshold —
+	// including a negative age — counts as active rather than re-triggering staleness.
 	wtFiles, wtLast, wtOK := 0, time.Time{}, false
 	if tgt.mode == model.ModeWrite && tgt.hasJob {
 		wtFiles, wtLast, wtOK = s.jobs.WorktreeActivity(tgt.jobID)
 	}
-	worktreeActive := wtOK && !s.now().Before(wtLast) && s.now().Sub(wtLast) <= config.StaleThreshold
+	worktreeActive := wtOK && now.Sub(wtLast) <= config.StaleThreshold
 
 	run, err := s.store.Load(tgt.runsDir, tgt.runID)
 	if err != nil {
@@ -162,7 +166,7 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 				if tgt.mode == model.ModeWrite {
 					out.Write = s.writeBlock(tgt, nil)
 				}
-				out.Progress = s.progressBlock(tgt, wtFiles, wtLast, wtOK)
+				out.Progress = progressBlock(tgt, now, wtFiles, wtLast, wtOK)
 				return out
 			}
 			// runId path for a run that does not exist yet -> queued/pending, NOT an error
@@ -183,7 +187,7 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	}
 
 	diskStatus := mapDiskStatus(run.Status)
-	out.Status = liveStatus(run.Status, run.UpdatedAt, s.now(), s.pidIsAlive(tgt), worktreeActive)
+	out.Status = liveStatus(run.Status, run.UpdatedAt, now, s.pidIsAlive(tgt), worktreeActive)
 	out.Intermediate = buildIntermediate(run, config.MaxInlineResultBytes)
 	out.Metadata = buildMetadata(run)
 
@@ -221,25 +225,35 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 	// Heartbeat for a still-running job: elapsed time + (write) worktree activity,
 	// so callers can tell a slow-but-working job from a wedged one.
 	if !isTerminal(out.Status) {
-		out.Progress = s.progressBlock(tgt, wtFiles, wtLast, wtOK)
+		out.Progress = progressBlock(tgt, now, wtFiles, wtLast, wtOK)
 	}
 	return out
 }
 
 // progressBlock builds the elapsed-time heartbeat plus, for write jobs, the
-// worktree file count and the age of the newest change. Returns nil when there is
-// no owning job / no start time (e.g. the runId path for an external run).
-func (s *Server) progressBlock(tgt resolved, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
+// worktree file count and the age of the newest change. Durations are clamped at
+// zero so clock skew (a startedAt or worktree mtime ahead of now) never surfaces a
+// nonsensical negative. Returns nil when there is no owning job / no start time
+// (e.g. the runId path for an external run).
+func progressBlock(tgt resolved, now time.Time, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
 	if !tgt.hasJob || tgt.startedAt.IsZero() {
 		return nil
 	}
-	p := &model.Progress{ElapsedSeconds: int64(s.now().Sub(tgt.startedAt).Seconds())}
+	p := &model.Progress{ElapsedSeconds: clampSeconds(now.Sub(tgt.startedAt))}
 	if wtOK {
 		p.WorktreeFiles = wtFiles
-		la := int64(s.now().Sub(wtLast).Seconds())
+		la := clampSeconds(now.Sub(wtLast))
 		p.LastActivitySeconds = &la
 	}
 	return p
+}
+
+// clampSeconds floors a duration at zero and returns whole seconds.
+func clampSeconds(d time.Duration) int64 {
+	if d < 0 {
+		return 0
+	}
+	return int64(d.Seconds())
 }
 
 // writeBlock emits a NON-mutating write block: branch always, worktree only when

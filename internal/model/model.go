@@ -206,7 +206,7 @@ type StatusMetadata struct {
 // looking dead when its run file goes stale.
 type Progress struct {
 	ElapsedSeconds      int64  `json:"elapsed_seconds"`                 // seconds since the job started
-	WorktreeFiles       int    `json:"worktree_files,omitempty"`        // write mode: agent-written files present in the worktree
+	WorktreeFiles       int    `json:"worktree_files,omitempty"`        // write mode: files present in the worktree (HEAD checkout + agent additions); grows as the agent writes
 	LastActivitySeconds *int64 `json:"last_activity_seconds,omitempty"` // write mode: age of the newest worktree change (small = actively working)
 }
 

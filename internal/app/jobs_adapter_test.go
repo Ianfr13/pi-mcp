@@ -207,3 +207,40 @@ func TestScanWorktreeActivity_Empty(t *testing.T) {
 		t.Fatalf("absent worktree must yield (0, zero), got (%d, %v)", files, newest)
 	}
 }
+
+// A LINKED git worktree (git worktree add ... HEAD) has a .git FILE (a gitdir
+// pointer), not a directory. scanWorktreeActivity must skip it whether it is a
+// file or a dir, so it neither counts the pointer nor lets its mtime drive the
+// liveness signal.
+func TestScanWorktreeActivity_GitPointerFileSkipped(t *testing.T) {
+	root := t.TempDir()
+	base := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	// .git as a FILE with a far-future mtime (must be ignored for count AND mtime).
+	gitPtr := filepath.Join(root, ".git")
+	if err := os.WriteFile(gitPtr, []byte("gitdir: /elsewhere/.git/worktrees/x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(gitPtr, base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"main.go", "internal/x.go"} {
+		p := filepath.Join(root, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, newest := scanWorktreeActivity(root)
+	if files != 2 {
+		t.Fatalf("must skip the .git pointer FILE, counted %d (want 2)", files)
+	}
+	if !newest.Equal(base) {
+		t.Fatalf("newest mtime must ignore the .git pointer's future time, got %v want %v", newest, base)
+	}
+}

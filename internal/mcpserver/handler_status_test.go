@@ -476,6 +476,44 @@ func TestStatus_WriteActiveWorktreeNotFalselyFailed(t *testing.T) {
 	}
 }
 
+// Clock skew (networked FS, container clock drift) can leave the newest worktree
+// mtime slightly AHEAD of the pi-mcp host clock. That future mtime is still proof
+// of very recent activity, so it must keep the job running (not re-trigger the
+// false-failure) and must not surface a negative last_activity_seconds.
+func TestStatus_WriteFutureMtimeStaysRunningAndClamps(t *testing.T) {
+	now := mustTime("2026-06-08T12:00:00Z")
+	staleUpd := now.Add(-(config.StaleThreshold + time.Minute))
+
+	run := buildRun()
+	run.Status = "paused"
+	run.Result = nil
+	run.TokenUsage = nil
+	run.UpdatedAt = &staleUpd
+
+	j := newFakeJobs()
+	j.lookup["job-fm"] = model.JobRecord{
+		JobID: "job-fm", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeWrite, PID: 4242,
+		Status: model.JobRunning, WorktreePath: "/wt/job-fm", Branch: "b", StartedAt: now.Add(-15 * time.Minute),
+	}
+	// worktree mtime 2s in the FUTURE relative to the host clock (skew).
+	j.activity["job-fm"] = wtActivity{files: 10, lastModified: now.Add(2 * time.Second), ok: true}
+	store := newFakeStore()
+	store.runs["/runs/"+run.RunID] = run
+	srv := New(j, store)
+	srv.now = func() time.Time { return now }
+
+	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-fm"})
+	if out.Status != "running" {
+		t.Fatalf("future-mtime (clock skew) write job must stay running, got %q", out.Status)
+	}
+	if out.Progress == nil || out.Progress.LastActivitySeconds == nil {
+		t.Fatalf("expected progress with last_activity")
+	}
+	if *out.Progress.LastActivitySeconds != 0 {
+		t.Fatalf("last_activity_seconds must clamp to >=0, got %d", *out.Progress.LastActivitySeconds)
+	}
+}
+
 func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
 	// A write job whose run file is stale AND whose worktree is NOT changing is
 	// genuinely wedged/dead -> staleness still applies (no false liveness).

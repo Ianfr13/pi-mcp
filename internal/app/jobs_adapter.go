@@ -122,8 +122,9 @@ func (a *jobsAdapter) WriteInfoFor(jobID string) (model.WriteInfo, bool) {
 }
 
 // WorktreeActivity walks the write job's worktree (NON-mutating — no git add -A,
-// unlike WriteInfoFor) and reports how many agent-written files it contains and
-// the most recent modification time. This is the liveness/progress signal for a
+// unlike WriteInfoFor) and reports how many files it contains (the HEAD checkout
+// plus the agent's additions) and the most recent modification time. This is the
+// liveness/progress signal for a
 // write job that edits files directly (its run file goes stale while it works).
 // It resolves the worktree path from the registry record, so it works for jobs
 // recovered after a restart too (no in-memory handle required). ok=false for
@@ -140,19 +141,31 @@ func (a *jobsAdapter) WorktreeActivity(jobID string) (int, time.Time, bool) {
 	return files, newest, true
 }
 
+// maxWorktreeScan backstops the walk so a pathological worktree (e.g. an agent
+// that ran a dependency install) can never turn a status poll into an unbounded
+// scan. No realistic code worktree approaches it.
+const maxWorktreeScan = 200000
+
 // scanWorktreeActivity counts regular files under root and returns the newest
-// mtime, skipping the .git and .pi bookkeeping dirs (which churn independently of
-// the agent's work). Errors are swallowed: a partial walk still yields a useful
-// liveness signal, and a missing worktree simply yields (0, zero time).
+// mtime, skipping the .git and .pi bookkeeping entries (which churn independently
+// of the agent's work). NOTE: pi-mcp creates a LINKED git worktree, where .git is
+// a FILE (a gitdir pointer), not a dir — so the skip matches both. The count is
+// "files present in the checkout + the agent's additions", not agent-only.
+// Errors are swallowed: a partial walk still yields a useful liveness signal, and
+// a missing worktree simply yields (0, zero time).
 func scanWorktreeActivity(root string) (files int, newest time.Time) {
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries; keep walking
 		}
-		if d.IsDir() {
-			if name := d.Name(); path != root && (name == ".git" || name == ".pi") {
+		// Skip pi/git bookkeeping whether it is a dir or a linked-worktree .git FILE.
+		if name := d.Name(); path != root && (name == ".git" || name == ".pi") {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		info, ierr := d.Info()
@@ -162,6 +175,9 @@ func scanWorktreeActivity(root string) (files int, newest time.Time) {
 		files++
 		if info.ModTime().After(newest) {
 			newest = info.ModTime()
+		}
+		if files >= maxWorktreeScan {
+			return filepath.SkipAll // backstop; count/newest are best-effort beyond this
 		}
 		return nil
 	})

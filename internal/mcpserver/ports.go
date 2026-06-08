@@ -29,9 +29,10 @@ type JobsService interface {
 	// for a job; ok=false when the job is unknown or not a write job.
 	WriteInfoFor(jobID string) (model.WriteInfo, bool)
 	// WorktreeActivity reports a NON-mutating liveness/progress signal for a write
-	// job: the count of agent-written files present in the worktree and the time of
-	// the most recent change. Unlike WriteInfoFor it never stages (no git add -A).
-	// ok=false for unknown or non-write jobs, or an absent worktree.
+	// job: the count of files present in the worktree (the HEAD checkout plus the
+	// agent's additions — not agent-only) and the time of the most recent change.
+	// Unlike WriteInfoFor it never stages (no git add -A). ok=false for unknown or
+	// non-write jobs, or an absent worktree.
 	WorktreeActivity(jobID string) (files int, lastModified time.Time, ok bool)
 }
 
