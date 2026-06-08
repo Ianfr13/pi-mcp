@@ -220,6 +220,40 @@ func TestReconcileDeadOwnerClaimsAllNonTerminal(t *testing.T) {
 	}
 }
 
+// TestReconcileSkipsPruneWhenOrphanChildAlive: a dead-OWNER running write job whose
+// recorded child PID is still ALIVE (an orphaned pi process reparented after the
+// owner died) is claimed terminal but its worktree is NOT pruned — pruning while a
+// live process writes it would lose data. A later reconcile (child gone) prunes it.
+func TestReconcileSkipsPruneWhenOrphanChildAlive(t *testing.T) {
+	dir := t.TempDir()
+	persistPath := filepath.Join(dir, "registry.db")
+	wt := writeWorktreeDir(t, dir, "orphan")
+	clock := time.Unix(7_000_000, 0)
+	prior := []model.JobRecord{
+		{JobID: "orphan", Status: model.JobRunning, Mode: model.ModeWrite,
+			WorktreePath: wt, Branch: "pi-mcp/job-orphan", PID: os.Getpid(), // live child
+			StartedAt: clock.Add(-time.Second)},
+	}
+	seedDB(t, persistPath, prior, 0, "") // ownerPid=0 -> dead owner
+
+	fp := &fakePruner{}
+	r := mustRegistry(t, Config{Cap: 4, PersistPath: persistPath, WorktreeRoot: dir,
+		Now: func() time.Time { return clock }}, newFakeLauncher("s"), &fakeCorrelator{}, fp)
+
+	if _, err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Claimed terminal (failed) in the DB...
+	recs := readBackJobs(t, persistPath)
+	if len(recs) != 1 || recs[0].Status != model.JobFailed {
+		t.Fatalf("orphan job should be claimed failed, got %+v", recs)
+	}
+	// ...but the worktree must NOT be pruned while the orphan child is alive.
+	if fp.prunedBranch("pi-mcp/job-orphan") {
+		t.Errorf("worktree must NOT be pruned while orphan child alive; pruned=%v", fp.branches())
+	}
+}
+
 // TestReconcileDeadOwnerWriteWorktreePruned: owner-scoped reconcile prunes the
 // worktree of a dead-owner running write job. Terminal dead-owner jobs and
 // live-owner jobs are NOT pruned (write mode with no WorktreePath also skipped).

@@ -35,6 +35,13 @@ func (r *Registry) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 		if rec.Mode == model.ModeWrite && rec.WorktreePath != "" {
+			if pidAlive(rec.PID) {
+				// An orphaned pi child (reparented to init after the owning server
+				// died abruptly) may still be writing this worktree. Pruning now would
+				// lose data. The job is already claimed terminal; leave the worktree —
+				// a later reconcile, once the child has exited, prunes it.
+				continue
+			}
 			_ = r.pruner.Prune(rec.WorktreePath, rec.Branch)
 		}
 	}
