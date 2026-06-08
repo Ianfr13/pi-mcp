@@ -10,8 +10,14 @@ func TestConstants(t *testing.T) {
 	if DefaultConcurrencyCap != 4 {
 		t.Errorf("cap = %d, want 4", DefaultConcurrencyCap)
 	}
-	if StaleThreshold != 300*time.Second {
-		t.Errorf("StaleThreshold = %v, want 300s", StaleThreshold)
+	if StaleThreshold != 30*time.Minute {
+		t.Errorf("StaleThreshold = %v, want 30m", StaleThreshold)
+	}
+	if ForcedAgentTimeoutMs != 1_200_000 {
+		t.Errorf("ForcedAgentTimeoutMs = %d, want 1200000", ForcedAgentTimeoutMs)
+	}
+	if StaleThreshold <= time.Duration(ForcedAgentTimeoutMs)*time.Millisecond {
+		t.Errorf("StaleThreshold (%v) must exceed the injected agent timeout (%dms)", StaleThreshold, ForcedAgentTimeoutMs)
 	}
 	if DefaultAgentTimeoutMs != 300000 {
 		t.Errorf("DefaultAgentTimeoutMs = %d", DefaultAgentTimeoutMs)

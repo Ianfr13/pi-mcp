@@ -21,9 +21,20 @@ const (
 	DefaultAgentTimeoutMs int64 = 300000
 )
 
-// StaleThreshold: a disk status of "running" with UpdatedAt older than this is
-// treated as crashed (post-restart liveness override). 300s == DefaultAgentTimeoutMs.
-const StaleThreshold = 300 * time.Second
+// ForcedAgentTimeoutMs is the per-agent timeout pi-mcp injects into the forcing
+// prompt (20 min) so coding/TDD agents are not killed by the 5-min default. The
+// forcing-prompt template (ForcingPromptTemplate) hardcodes this literal as
+// "1200000"; keep the two in sync. StaleThreshold MUST exceed this value.
+const ForcedAgentTimeoutMs int64 = 1_200_000
+
+// StaleThreshold: a non-terminal job whose updatedAt is older than this is
+// treated as crashed (liveness override in livestatus.Derive + the dashboard
+// blind-window path + the write-job worktree-activity window). It MUST exceed
+// ForcedAgentTimeoutMs — a single healthy agent can run that long with a quiet
+// run file, and must NOT be reported failed. Genuinely-dead jobs are reaped
+// promptly by the periodic reconcile and the normal job lifecycle, so a generous
+// threshold does not delay real failure detection. 20-min timeout + 10-min margin.
+const StaleThreshold = time.Duration(ForcedAgentTimeoutMs)*time.Millisecond + 10*time.Minute
 
 // MaxAuthoringRetries is how many EXTRA times pi-mcp relaunches pi when a job
 // fails BEFORE any run file is created (the workflow never started — e.g. the

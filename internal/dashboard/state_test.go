@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"pi-mcp/internal/config"
 	"pi-mcp/internal/model"
 	"pi-mcp/internal/runstore"
 )
@@ -115,7 +116,7 @@ func TestBuildState_StaleBlindFails(t *testing.T) {
 	// job-blind started long ago, no run file, not worktree-active -> failed.
 	for i := range recs {
 		if recs[i].JobID == "job-blind" {
-			recs[i].StartedAt = nowFresh.Add(-2 * 300 * time.Second)
+			recs[i].StartedAt = nowFresh.Add(-config.StaleThreshold - time.Minute)
 		}
 	}
 	s := BuildState(recs, "/state", nowFresh)

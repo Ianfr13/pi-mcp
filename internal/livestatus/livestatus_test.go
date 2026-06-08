@@ -45,3 +45,14 @@ func TestDerive(t *testing.T) {
 		t.Errorf("dead pid -> %q want failed", got)
 	}
 }
+
+func TestDerive_LongRunningAgentNotStale(t *testing.T) {
+	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	// A single agent can run up to the injected 20-min agentTimeoutMs with a quiet
+	// run file. With a live (or unknown) pid and no worktree activity it MUST stay
+	// running — not flip to "failed" — because StaleThreshold now exceeds 20 min.
+	longRun := now.Add(-20 * time.Minute)
+	if got := Derive("running", &longRun, now, true, false); got != "running" {
+		t.Fatalf("20-min-old running agent -> %q want running (StaleThreshold must exceed the agent timeout)", got)
+	}
+}
