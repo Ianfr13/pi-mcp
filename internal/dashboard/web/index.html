@@ -1,3 +1,34 @@
-<!doctype html><html><head><meta charset="utf-8"><title>pi-mcp control plane</title>
-<link rel="stylesheet" href="/static/app.css"></head>
-<body><div id="app">loading…</div><script src="/static/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pi-mcp · control plane</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">pi-mcp <span class="muted">· control plane</span></span>
+    <span class="counts" id="counts"></span>
+    <span class="conn" id="conn" title="connection">●</span>
+  </header>
+  <main class="layout">
+    <aside class="rail">
+      <section>
+        <h2>Live</h2>
+        <div id="live" class="list"></div>
+      </section>
+      <section>
+        <h2>History
+          <span class="filter" id="filter">
+            <button data-w="24h" class="on">24h</button><button data-w="7d">7d</button><button data-w="all">all</button>
+          </span>
+        </h2>
+        <div id="history" class="list"></div>
+      </section>
+    </aside>
+    <section class="panel" id="panel"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
