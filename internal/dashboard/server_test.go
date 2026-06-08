@@ -35,6 +35,21 @@ func TestServer_Index(t *testing.T) {
 	}
 }
 
+// TestServer_NoStoreHeaders guards against the stale-SPA bug: redeploying a new
+// binary must not leave browsers serving cached old assets. Every response carries
+// Cache-Control: no-store.
+func TestServer_NoStoreHeaders(t *testing.T) {
+	srv := newTestServer(t)
+	for _, path := range []string{"/", "/static/app.js", "/static/app.css", "/api/state", "/api/job/job-completed"} {
+		r := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", path, got)
+		}
+	}
+}
+
 func TestServer_APIState(t *testing.T) {
 	srv := newTestServer(t)
 	r := httptest.NewRequest("GET", "/api/state", nil)

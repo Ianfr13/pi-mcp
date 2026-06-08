@@ -25,7 +25,7 @@ func NewServer(p *Poller, h *Hub) *Server {
 	return &Server{poller: p, hub: h, static: http.FileServer(http.FS(sub))}
 }
 
-// Handler returns the configured mux.
+// Handler returns the configured mux, wrapped so every response is uncacheable.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
@@ -33,7 +33,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/job/", s.handleJob)
 	mux.HandleFunc("/events", s.handleEvents)
-	return mux
+	return noStore(mux)
+}
+
+// noStore stamps Cache-Control: no-store on every response. The SPA assets are
+// embedded and served without validators (embed.FS has a zero modtime, so
+// http.FileServer emits no ETag/Last-Modified); without this, browsers
+// heuristically cache the old index.html/app.js and keep running stale client
+// code after a redeploy — which looks like "the dashboard only opens the same job
+// / only errors." The payloads are tiny and the live data flows over SSE, so
+// no-store costs nothing here.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
