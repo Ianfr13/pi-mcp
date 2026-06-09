@@ -9,6 +9,7 @@ import (
 
 	"pi-mcp/internal/config"
 	"pi-mcp/internal/model"
+	"pi-mcp/internal/runstore"
 )
 
 const (
@@ -107,7 +108,7 @@ func (s *Server) resolveTarget(in model.StatusInput) (resolved, error) {
 }
 
 func runsDirFor(cwd string) string {
-	return cwd + "/" + config.RunsDirRel
+	return runstore.RunsDir(cwd)
 }
 
 func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in model.StatusInput) (*mcp.CallToolResult, model.StatusOutput, error) {
@@ -192,15 +193,16 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 
 	diskStatus := mapDiskStatus(run.Status)
 	out.Status = liveStatus(run.Status, run.UpdatedAt, now, s.pidIsAlive(tgt), worktreeActive)
-	out.Intermediate = buildIntermediate(run, config.MaxInlineResultBytes)
-	out.Metadata = buildMetadata(run)
+	out.Intermediate = runstore.Intermediates(run, config.MaxInlineResultBytes)
+	md := runstore.Metadata(run)
+	out.Metadata = &md
 
 	if out.Status == "completed" {
 		res, _ := coerceResult(run.Result, out.Status)
 		// res is the coerced json.RawMessage; unmarshal to `any` so the OUTPUT
 		// struct carries a real object/array/scalar. The field is `any` (not
 		// json.RawMessage) so go-sdk output-schema validation accepts it.
-		out.Result = rawToAny(res)
+		out.Result = runstore.RawToAny(res)
 	}
 	if out.Status == "failed" || out.Status == "aborted" {
 		out.Error = failureMessage(tgt, run)

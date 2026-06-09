@@ -19,19 +19,18 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"pi-mcp/internal/livestatus"
 	"pi-mcp/internal/model"
 )
 
 // runAgents is the minimal slice of the pi run file we assert on: the per-agent
 // model attribution that proves multi-model fan-out actually happened.
 type runAgents struct {
-	RunID  string          `json:"runId"`
-	Status string          `json:"status"`
-	Result json.RawMessage `json:"result"`
+	RunID  string `json:"runId"`
+	Status string `json:"status"`
 	Agents []struct {
 		Label string `json:"label"`
 		Model string `json:"model"`
-		Phase string `json:"phase"`
 	} `json:"agents"`
 }
 
@@ -182,7 +181,7 @@ func TestE2ESmoke(t *testing.T) {
 		}
 
 		// VERDICT signal: the jobId path itself reaching terminal.
-		if isTerminal(final.Status) {
+		if livestatus.IsTerminal(final.Status) {
 			terminal = true
 			break
 		}
@@ -238,12 +237,10 @@ func TestE2ESmoke(t *testing.T) {
 	seen := map[string]bool{}
 	distinct := 0
 	byModel := map[string]int{}
-	anyModel := false
 	for _, a := range ra.Agents {
 		models = append(models, a.Label+"="+a.Model)
 		byModel[a.Model]++
 		if a.Model != "" {
-			anyModel = true
 			if !seen[a.Model] {
 				seen[a.Model] = true
 				distinct++
@@ -258,7 +255,7 @@ func TestE2ESmoke(t *testing.T) {
 	if len(ra.Agents) == 0 {
 		t.Fatalf("completed but NO agents recorded in run file")
 	}
-	if !anyModel {
+	if distinct == 0 {
 		t.Fatalf("completed but no agent recorded a model")
 	}
 	// The runId surfaced by the jobId path must match the on-disk run file.
@@ -301,28 +298,6 @@ func repoRoot(t *testing.T) string {
 			t.Fatalf("could not locate go.mod above %s", dir)
 		}
 		dir = parent
-	}
-}
-
-func isTerminal(status string) bool {
-	switch status {
-	case "completed", "failed", "aborted":
-		return true
-	default:
-		return false
-	}
-}
-
-// mapDiskStatus mirrors the server's run-file -> MCP status mapping: any
-// non-terminal disk status (running, paused, unknown) collapses to "running".
-// pi_list surfaces the raw disk status, so the test maps it before the terminal
-// check.
-func mapDiskStatus(disk string) string {
-	switch disk {
-	case "completed", "failed", "aborted":
-		return disk
-	default:
-		return "running"
 	}
 }
 

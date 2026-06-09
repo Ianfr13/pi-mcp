@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"pi-mcp/internal/config"
 	"pi-mcp/internal/jobs"
 	"pi-mcp/internal/mcpserver"
 	"pi-mcp/internal/model"
+	"pi-mcp/internal/runstore"
 	"pi-mcp/internal/worktree"
 )
 
@@ -67,7 +67,7 @@ func (a *jobsAdapter) Submit(ctx context.Context, in mcpserver.JobSpec) (model.J
 		CWD:     in.CWD,
 		Task:    in.Task,
 		Context: in.Context,
-		RunsDir: filepath.Join(in.CWD, config.RunsDirRel),
+		RunsDir: runstore.RunsDir(in.CWD),
 	}
 	if in.Mode == model.ModeWrite {
 		mgr, err := worktree.New(ctx, in.CWD) // fail-before-spawn: NOT_A_GIT_REPO
@@ -85,7 +85,7 @@ func (a *jobsAdapter) Submit(ctx context.Context, in mcpserver.JobSpec) (model.J
 		spec.Worktree = h.Path
 		spec.Branch = h.Branch
 		spec.CWD = h.Path
-		spec.RunsDir = filepath.Join(h.Path, config.RunsDirRel)
+		spec.RunsDir = runstore.RunsDir(h.Path)
 		a.remember(id, mgr, h)
 	}
 	return a.reg.Submit(ctx, spec)

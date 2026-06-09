@@ -19,9 +19,6 @@ func TestConstants(t *testing.T) {
 	if StaleThreshold <= time.Duration(ForcedAgentTimeoutMs)*time.Millisecond {
 		t.Errorf("StaleThreshold (%v) must exceed the injected agent timeout (%dms)", StaleThreshold, ForcedAgentTimeoutMs)
 	}
-	if DefaultAgentTimeoutMs != 300000 {
-		t.Errorf("DefaultAgentTimeoutMs = %d", DefaultAgentTimeoutMs)
-	}
 	if WaitCap != 60*time.Second {
 		t.Errorf("WaitCap = %v, want 60s", WaitCap)
 	}

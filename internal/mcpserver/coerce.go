@@ -69,19 +69,3 @@ func mustJSON(v any) json.RawMessage {
 	}
 	return b
 }
-
-// rawToAny decodes a stored json.RawMessage into an `any` (object/array/scalar)
-// for placement in an OUTPUT struct. The OUTPUT fields are `any` (not
-// json.RawMessage) so go-sdk reflects an unconstrained schema and validates the
-// real value; raw bytes would reflect to "null|array" and be rejected. Empty or
-// undecodable raw yields nil (the omitempty field is dropped).
-func rawToAny(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil
-	}
-	return v
-}

@@ -3,7 +3,6 @@ package dashboard
 import (
 	"encoding/json"
 	"io/fs"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -86,7 +85,7 @@ var readRun = func(runsDir, runID string) (*model.Run, error) {
 	if runID == "" {
 		return nil, fs.ErrNotExist
 	}
-	return runstore.ReadRun(filepath.Join(runsDir, runID+".json"))
+	return runstore.Load(runsDir, runID)
 }
 
 // BuildState derives the light snapshot from the registry records.
@@ -213,22 +212,9 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 	d.Intermediate = runstore.Intermediates(run, config.MaxInlineResultBytes)
 	d.TokenUsage = run.TokenUsage
 	if livestatus.IsTerminal(d.Status) && d.Status == "completed" {
-		d.Result = rawToAny(run.Result)
+		d.Result = runstore.RawToAny(run.Result)
 	}
 	return d, true
-}
-
-// rawToAny decodes a json.RawMessage into an any (object/array/scalar); empty or
-// invalid -> nil.
-func rawToAny(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil
-	}
-	return v
 }
 
 // jsonMarshal is a thin wrapper so server.go need not import encoding/json

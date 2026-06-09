@@ -92,40 +92,6 @@ type AuthoringInfo struct {
 	UpdatedAt string `json:"updatedAt"` // RFC3339Nano UTC
 }
 
-// ---------- pi --mode json stream events (§7) ----------
-// Line-delimited JSON; switch on .Type; ignore unknown types.
-
-// StreamEvent is the generic envelope for one JSONL line.
-type StreamEvent struct {
-	Type    string `json:"type"`              // session|agent_start|agent_end|turn_start|turn_end|message_start|message_end|tool_execution_start|tool_execution_end|...
-	ID      string `json:"id,omitempty"`      // on type=="session": == run.sessionId
-	Version int    `json:"version,omitempty"` // session events
-	CWD     string `json:"cwd,omitempty"`     // session events
-	// tool_execution_* fields:
-	ToolName   string          `json:"toolName,omitempty"`
-	ToolCallID string          `json:"toolCallId,omitempty"`
-	IsError    bool            `json:"isError,omitempty"`
-	Result     *ToolResult     `json:"result,omitempty"`  // on tool_execution_end
-	Args       json.RawMessage `json:"args,omitempty"`    // on tool_execution_start (workflow script etc.)
-	Message    json.RawMessage `json:"message,omitempty"` // message_start/message_end payload (unparsed here)
-}
-
-// ToolResult is tool_execution_end(toolName=="workflow").result. The workflow
-// final result lives in Content[0].Text as: header line + a ```json``` block.
-// NOTE (validated §7): it does NOT carry details.result/details.runId — extract
-// from Content[0].Text by stripping the "✓ Workflow ... finished" header and
-// parsing the fenced json block (fallback: raw text).
-type ToolResult struct {
-	Content []ContentBlock  `json:"content"`
-	Details json.RawMessage `json:"details,omitempty"`
-}
-
-// ContentBlock is one block of a ToolResult.Content / message content.
-type ContentBlock struct {
-	Type string `json:"type"` // text|thinking|toolCall|...
-	Text string `json:"text,omitempty"`
-}
-
 // ---------- job registry record, persisted to disk (§8) ----------
 
 // JobStatus is the pi-mcp-level job lifecycle status surfaced to MCP clients.

@@ -15,10 +15,6 @@ const (
 	// DefaultConcurrencyCap is the max simultaneous pi jobs (configurable).
 	// Justified by provider rate limits, not a token budget (decision #12).
 	DefaultConcurrencyCap = 4
-
-	// DefaultAgentTimeoutMs is the engine's per-agent timeout (~5min). pi-mcp
-	// does NOT impose its own job timeout (cancel-only); this mirrors the engine.
-	DefaultAgentTimeoutMs int64 = 300000
 )
 
 // ForcedAgentTimeoutMs is the per-agent timeout pi-mcp injects into the forcing

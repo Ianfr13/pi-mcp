@@ -60,23 +60,6 @@ func main() {
 	}
 }
 
-// resolveAddr returns the explicit addr when given, else detects the Tailscale
-// IP (one shot) and appends :7777. detect is injectable for tests; nil uses the
-// production detector.
-func resolveAddr(explicit string, detect func() (string, error)) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if detect == nil {
-		detect = dashboard.DetectTailscaleIP
-	}
-	ip, err := detect()
-	if err != nil {
-		return "", err
-	}
-	return ip + ":" + defaultPort, nil
-}
-
 // resolveAddrWait is the production path: explicit addr binds immediately; an
 // empty addr WAITS for the tailnet IP (never falls back to LAN).
 func resolveAddrWait(ctx context.Context, explicit string, logger *log.Logger) (string, error) {

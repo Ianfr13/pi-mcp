@@ -27,16 +27,14 @@ type Config struct {
 
 // Registry is the concurrency-capped, disk-persisted job map.
 type Registry struct {
-	mu           sync.Mutex
-	jobs         map[string]*Job // jobID -> Job
-	queue        []*Job          // FIFO of queued jobs awaiting a slot
-	slots        chan struct{}   // buffered to cap; a token == an occupied running slot
-	cap          int
-	persistPath  string
-	worktreeRoot string
-	now          func() time.Time
-	closed       bool
-	wg           sync.WaitGroup // tracks runAttempts goroutines; Close waits on it before store.Close
+	mu     sync.Mutex
+	jobs   map[string]*Job // jobID -> Job
+	queue  []*Job          // FIFO of queued jobs awaiting a slot
+	slots  chan struct{}   // buffered to cap; a token == an occupied running slot
+	cap    int
+	now    func() time.Time
+	closed bool
+	wg     sync.WaitGroup // tracks runAttempts goroutines; Close waits on it before store.Close
 
 	launcher   Launcher
 	correlator Correlator
@@ -72,8 +70,6 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, err
 		jobs:           make(map[string]*Job),
 		slots:          make(chan struct{}, capN),
 		cap:            capN,
-		persistPath:    cfg.PersistPath,
-		worktreeRoot:   cfg.WorktreeRoot,
 		now:            now,
 		launcher:       l,
 		correlator:     c,

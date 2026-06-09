@@ -4,7 +4,6 @@
 package worktree
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -180,56 +179,6 @@ func (m *Manager) WriteInfo(ctx context.Context, h *Handle) (model.WriteInfo, er
 	}, nil
 }
 
-// Prune force-removes the worktree at h.Path, deletes its branch, and runs
-// `git worktree prune`. It is idempotent: a missing worktree or branch is not an
-// error, so pi_cancel and startup reconciliation can call it safely.
-func (m *Manager) Prune(ctx context.Context, h *Handle) error {
-	// Force-remove the worktree (ignore "is not a working tree" / not found).
-	_, _ = m.runGit(ctx, "worktree", "remove", "--force", h.Path)
-	// As a belt-and-suspenders, drop the dir if git left it behind.
-	if _, err := os.Stat(h.Path); err == nil {
-		_ = os.RemoveAll(h.Path)
-	}
-	// Delete the branch (ignore "branch not found").
-	_, _ = m.runGit(ctx, "branch", "-D", h.Branch)
-	// Reap administrative files for removed worktrees.
-	if _, err := m.runGit(ctx, "worktree", "prune"); err != nil {
-		return fmt.Errorf("worktree prune: %w", err)
-	}
-	return nil
-}
-
-// PruneOrphans removes every worktree whose branch starts with
-// config.WorktreeBranchPrefix ("pi-mcp/job-"), deletes those branches, and runs
-// `git worktree prune`. It leaves unrelated worktrees/branches untouched. Used by
-// startup reconciliation to GC worktrees orphaned by a crash. Returns the list of
-// branches removed.
-func (m *Manager) PruneOrphans(ctx context.Context) ([]string, error) {
-	out, err := m.runGit(ctx, "worktree", "list", "--porcelain")
-	if err != nil {
-		return nil, fmt.Errorf("worktree list: %w", err)
-	}
-
-	found := parseWorktreeList(out)
-
-	var removed []string
-	for _, w := range found {
-		if !strings.HasPrefix(w.branch, config.WorktreeBranchPrefix) {
-			continue
-		}
-		_, _ = m.runGit(ctx, "worktree", "remove", "--force", w.path)
-		if _, err := os.Stat(w.path); err == nil {
-			_ = os.RemoveAll(w.path)
-		}
-		_, _ = m.runGit(ctx, "branch", "-D", w.branch)
-		removed = append(removed, w.branch)
-	}
-	if _, err := m.runGit(ctx, "worktree", "prune"); err != nil {
-		return removed, fmt.Errorf("worktree prune: %w", err)
-	}
-	return removed, nil
-}
-
 // Prune removes a single worktree+branch given only its path+branch (no Manager
 // needed). It resolves the owning repo via `git -C <worktreePath> rev-parse
 // --git-common-dir`, then runs worktree remove --force / branch -D / worktree
@@ -278,39 +227,6 @@ func resolveCommonRepo(ctx context.Context, worktreePath string) string {
 	}
 	// The main work tree is the parent of the common .git dir.
 	return filepath.Dir(commonDir)
-}
-
-// worktreeRecord is one entry parsed from `git worktree list --porcelain`.
-type worktreeRecord struct {
-	path   string
-	branch string
-}
-
-// parseWorktreeList parses `git worktree list --porcelain` output into records.
-// Branch refs are normalized from "refs/heads/<name>" to "<name>".
-func parseWorktreeList(out string) []worktreeRecord {
-	var found []worktreeRecord
-	var cur worktreeRecord
-	sc := bufio.NewScanner(strings.NewReader(out))
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			cur = worktreeRecord{path: strings.TrimPrefix(line, "worktree ")}
-		case strings.HasPrefix(line, "branch "):
-			// e.g. "branch refs/heads/pi-mcp/job-abc"
-			cur.branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
-		case line == "": // blank line terminates one worktree record
-			if cur.path != "" {
-				found = append(found, cur)
-			}
-			cur = worktreeRecord{}
-		}
-	}
-	if cur.path != "" { // last record with no trailing blank
-		found = append(found, cur)
-	}
-	return found
 }
 
 // runGit runs a git subcommand in repoCWD and returns combined output.
