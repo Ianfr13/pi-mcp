@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { install } from '../src/install.js';
@@ -15,6 +15,7 @@ test('install dry-run records actions and writes nothing', async () => {
   assert.equal(result.ok, true);
   assert.equal(actions.some((a) => a.command?.includes('npm install -g --ignore-scripts @earendil-works/pi-coding-agent')), true);
   await assert.rejects(() => readFile(join(home, '.pi', 'agent', 'settings.json'), 'utf8'));
+  await assert.rejects(() => access(join(home, '.local', 'bin')));
 });
 
 test('install merges configs and skips Claude registration when missing', async () => {

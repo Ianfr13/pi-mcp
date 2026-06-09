@@ -28,6 +28,5 @@
     "dynamic-workflows",
     "bootstrap"
   ],
-  "license": "UNLICENSED",
-  "private": true
+  "license": "UNLICENSED"
 }

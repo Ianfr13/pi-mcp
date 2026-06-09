@@ -25,8 +25,8 @@ export async function readJson(path, fallback = undefined) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 
-function defaultTimestamp() {
-  return new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
+export function defaultTimestamp() {
+  return new Date().toISOString().replace(/[-:.]/g, '');
 }
 
 export async function writeJsonAtomic(path, value, options = {}) {

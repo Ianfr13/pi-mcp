@@ -35,7 +35,8 @@ async function preparePiMcpSource(paths, options, env, actions) {
 
 async function buildPiMcp(paths, options, env, actions) {
   const source = await preparePiMcpSource(paths, options, env, actions);
-  await ensureDir(paths.binDir);
+  if (options.dryRun) actions.push({ name: 'mkdir', path: paths.binDir });
+  else await ensureDir(paths.binDir);
   await run('go', ['build', '-o', paths.piMcpBin, './cmd/pi-mcp'], { cwd: source, env, dryRun: options.dryRun, actions });
   if (!options.dryRun && await exists(paths.piMcpBin)) await chmod(paths.piMcpBin, 0o755);
 }
