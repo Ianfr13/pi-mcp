@@ -139,7 +139,12 @@ func summarize(rec model.JobRecord, now time.Time) JobSummary {
 
 	run, err := readRun(rec.RunsDir, rec.RunID)
 	if err != nil || run == nil {
-		// No run file. Surface registry status.
+		// On-disk run file gone: fall back to the snapshot persisted at terminal
+		// time (populated only on the on-demand detail read; nil in the list path).
+		run = decodeSnapshot(rec.RunSnapshot)
+	}
+	if run == nil {
+		// No run file and no snapshot. Surface registry status.
 		switch rec.Status {
 		case model.JobQueued:
 			js.Status = "queued"
@@ -193,12 +198,16 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 	d := JobDetail{JobSummary: summarize(rec, now), Agents: []AgentView{}, Intermediate: []model.IntermediateResult{}}
 	run, err := readRun(rec.RunsDir, rec.RunID)
 	if err != nil || run == nil {
+		// On-disk run file gone: render from the snapshot persisted at terminal time.
+		run = decodeSnapshot(rec.RunSnapshot)
+	}
+	if run == nil {
 		if d.BlindWindow {
 			if a, ok := runstore.ReadAuthoring(rec.RunsDir, rec.JobID); ok {
 				d.Authoring = a
 			}
 		}
-		return d, true // blind / no run file: summary (+authoring) only
+		return d, true // blind / no run file / no snapshot: summary (+authoring) only
 	}
 	d.Phases = run.Phases
 	d.Agents = make([]AgentView, 0, len(run.Agents))
@@ -225,3 +234,18 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 // jsonMarshal is a thin wrapper so server.go need not import encoding/json
 // directly for one call.
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+// decodeSnapshot decodes a persisted run snapshot (model.JobRecord.RunSnapshot —
+// the run-file JSON pi-mcp captured at terminal time) into a *model.Run, or nil
+// when absent or invalid. This is what lets the dashboard render a terminal job
+// whose on-disk run file has since been removed (temp cwd cleaned / worktree pruned).
+func decodeSnapshot(b []byte) *model.Run {
+	if len(b) == 0 {
+		return nil
+	}
+	var run model.Run
+	if json.Unmarshal(b, &run) != nil {
+		return nil
+	}
+	return &run
+}

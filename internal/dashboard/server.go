@@ -86,7 +86,14 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range recs {
 		if recs[i].JobID == id {
-			d, ok := BuildDetail(recs[i], s.poller.now())
+			rec := recs[i]
+			// On-demand: pull this one job's persisted run snapshot so BuildDetail can
+			// render it even if the on-disk run file is gone. Best-effort — any error
+			// (incl. an older DB without the column) just leaves the snapshot empty.
+			if snap, err := ReadJobSnapshot(s.poller.registryPath, id); err == nil && len(snap) > 0 {
+				rec.RunSnapshot = snap
+			}
+			d, ok := BuildDetail(rec, s.poller.now())
 			if !ok {
 				break
 			}

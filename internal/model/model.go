@@ -128,6 +128,13 @@ type JobRecord struct {
 	StartedAt    time.Time `json:"startedAt"`
 	ErrorCode    string    `json:"errorCode,omitempty"` // one of config error-code consts
 	ErrorMessage string    `json:"errorMessage,omitempty"`
+
+	// RunSnapshot is the run file pi wrote, captured into the registry at terminal
+	// time so the dashboard can still render this job's detail after the on-disk
+	// run file is gone (temp cwd cleaned / worktree pruned). DB-only carrier:
+	// never serialized on the wire, never written by the bulk upsert (only the
+	// targeted SaveSnapshot path), and only populated on the on-demand detail read.
+	RunSnapshot []byte `json:"-"`
 }
 
 // ---------- MCP tool I/O structs (§5) ----------

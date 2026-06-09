@@ -129,6 +129,7 @@ func buildRegistryReal(Deps) (*jobs.Registry, error) {
 			Cap:          config.DefaultConcurrencyCap,
 			PersistPath:  persist,
 			WorktreeRoot: wtRoot,
+			SnapshotRun:  snapshotRunFile,
 		},
 		realLauncher{},
 		realCorrelator{},

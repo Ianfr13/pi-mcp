@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   errorMessage  TEXT NOT NULL DEFAULT '',
   ownerPid      INTEGER NOT NULL DEFAULT 0,
   ownerStartedAt TEXT NOT NULL DEFAULT '',
-  updatedAt     TEXT NOT NULL
+  updatedAt     TEXT NOT NULL,
+  runSnapshot   BLOB NOT NULL DEFAULT ''
 );`
 
 // regStore is the SQLite-backed job registry persistence layer. Multiple
@@ -65,6 +66,10 @@ func OpenStore(path string) (*regStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	if err := ensureRunSnapshotColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate runSnapshot: %w", err)
+	}
 	s := &regStore{db: db, path: path}
 	if err := s.migrateLegacyJSON(); err != nil {
 		// non-fatal: log-and-continue by returning the store anyway
@@ -74,6 +79,48 @@ func OpenStore(path string) (*regStore, error) {
 }
 
 func (s *regStore) Close() error { return s.db.Close() }
+
+// ensureRunSnapshotColumn adds the runSnapshot column to a pre-existing jobs
+// table that predates it (CREATE TABLE IF NOT EXISTS never alters an existing
+// table). Idempotent: a no-op when the column is already present.
+func ensureRunSnapshotColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "runSnapshot" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE jobs ADD COLUMN runSnapshot BLOB NOT NULL DEFAULT ''`)
+	return err
+}
+
+const saveSnapshotSQL = `UPDATE jobs SET runSnapshot=? WHERE jobId=? AND ownerPid=?;`
+
+// SaveSnapshot persists the final run-file JSON for a job THIS server owns, so a
+// reader (the dashboard) can render the job after the on-disk run file is gone.
+// Owner-guarded so it never clobbers a row owned by another live server. A row
+// that does not match (wrong owner / unknown job) is silently a no-op.
+func (s *regStore) SaveSnapshot(jobID string, snapshot []byte, ownerPid int) error {
+	_, err := s.db.Exec(saveSnapshotSQL, snapshot, jobID, ownerPid)
+	return err
+}
 
 const upsertSQL = `
 INSERT INTO jobs (jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid,ownerStartedAt,updatedAt)

@@ -23,6 +23,11 @@ type Config struct {
 	PersistPath  string           // path to the registry JSON file
 	WorktreeRoot string           // root under which pi-mcp/job-* worktrees live (reconcile scan)
 	Now          func() time.Time // injectable clock; nil -> time.Now
+	// SnapshotRun reads the final run file (runsDir,runID) and returns its
+	// canonical JSON for persistence into the registry at terminal time, or nil
+	// when there is no readable run file. Injected by the app (runstore-backed);
+	// nil disables snapshotting (tests).
+	SnapshotRun func(runsDir, runID string) []byte
 }
 
 // Registry is the concurrency-capped, disk-persisted job map.
@@ -49,6 +54,10 @@ type Registry struct {
 	store          *regStore
 	ownerPid       int
 	ownerStartedAt string
+
+	// snapshotRun captures the final run file into the registry at terminal time
+	// (nil disables). See Config.SnapshotRun.
+	snapshotRun func(runsDir, runID string) []byte
 }
 
 // NewRegistry builds a Registry over a SQLite store at cfg.PersistPath. cfg.Cap<=0
@@ -78,6 +87,7 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, err
 		store:          store,
 		ownerPid:       os.Getpid(),
 		ownerStartedAt: now().UTC().Format(time.RFC3339Nano),
+		snapshotRun:    cfg.SnapshotRun,
 	}, nil
 }
 
@@ -435,8 +445,21 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	worktree := j.Record.WorktreePath
 	branch := j.Record.Branch
 	finalStatus := j.Record.Status
+	jobID := j.Record.JobID
+	runsDir := j.Record.RunsDir
+	runID := j.Record.RunID
 	_ = r.flushUnlocked()
 	r.mu.Unlock()
+
+	// Best-effort: snapshot the final run file into the registry so the dashboard
+	// can still render this job after the on-disk run file is gone (temp cwd
+	// cleaned / worktree pruned). Captured BEFORE any worktree prune below so an
+	// aborted write job's run file is still readable.
+	if r.snapshotRun != nil && runID != "" {
+		if snap := r.snapshotRun(runsDir, runID); len(snap) > 0 {
+			_ = r.store.SaveSnapshot(jobID, snap, r.ownerPid)
+		}
+	}
 
 	if isWrite && finalStatus == model.JobAborted {
 		_ = r.pruner.Prune(worktree, branch)
