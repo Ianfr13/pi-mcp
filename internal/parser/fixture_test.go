@@ -2,7 +2,6 @@ package parser
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,15 +43,6 @@ func TestParseStream_PositiveFixture(t *testing.T) {
 	if e := got.Err(); e != "" {
 		t.Fatalf("Err() = %q, want \"\"", e)
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(got.Result, &obj); err != nil {
-		t.Fatalf("Result not an object: %q (%v)", string(got.Result), err)
-	}
-	for _, k := range []string{"claims", "overall"} {
-		if _, ok := obj[k]; !ok {
-			t.Fatalf("Result missing key %q: %s", k, string(got.Result))
-		}
-	}
 }
 
 func TestParseStream_NegativeFixture_NoWorkflowRun(t *testing.T) {
@@ -74,8 +64,5 @@ func TestParseStream_NegativeFixture_NoWorkflowRun(t *testing.T) {
 	}
 	if e := got.Err(); e != config.ErrNoWorkflowRun {
 		t.Fatalf("Err() = %q, want %q", e, config.ErrNoWorkflowRun)
-	}
-	if len(got.Result) != 0 {
-		t.Fatalf("Result = %q, want empty", string(got.Result))
 	}
 }

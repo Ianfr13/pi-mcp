@@ -68,8 +68,10 @@ func (realLauncher) Launch(ctx context.Context, spec jobs.Spec) (int, <-chan str
 
 	wait := func() error {
 		o := <-done
-		waitErr := proc.Wait()
-		return composeWaitError(o.res, o.err, waitErr)
+		// Reap the process; the exit code is advisory only — the parser/runstore
+		// make the authoritative success determination.
+		_ = proc.Wait()
+		return composeWaitError(o.res, o.err)
 	}
 
 	return proc.PID(), sessionCh, wait, nil
@@ -227,11 +229,11 @@ func appendPreview(buf []byte, s string) []byte {
 	return buf[cut:]
 }
 
-// composeWaitError turns the parser result, parser error, and process exit error
-// into a single wait() error. A workflow that ran cleanly (no parse error, no
-// NO_WORKFLOW_RUN, not isError) yields nil regardless of a non-zero exit code,
-// because the parser/runstore make the authoritative success determination.
-func composeWaitError(res parser.Result, parseErr, waitErr error) error {
+// composeWaitError turns the parser result and parser error into a single wait()
+// error. A workflow that ran cleanly (no parse error, no NO_WORKFLOW_RUN, not
+// isError) yields nil, because the parser/runstore make the authoritative success
+// determination (the process exit code is advisory and is not consulted).
+func composeWaitError(res parser.Result, parseErr error) error {
 	if parseErr != nil {
 		return fmt.Errorf("pi stream parse: %w", parseErr)
 	}
@@ -246,7 +248,6 @@ func composeWaitError(res parser.Result, parseErr, waitErr error) error {
 		}
 		return fmt.Errorf("%s", msg)
 	}
-	// Workflow ran and reported success; the exit code is advisory only.
-	_ = waitErr
+	// Workflow ran and reported success.
 	return nil
 }

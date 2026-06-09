@@ -27,7 +27,6 @@ type Run struct {
 	Agents       []Agent         `json:"agents"`
 	Journal      []JournalEntry  `json:"journal"`
 	Logs         []string        `json:"logs,omitempty"`
-	Script       string          `json:"script,omitempty"`
 	Result       json.RawMessage `json:"result,omitempty"` // workflow-defined shape; authoritative when completed
 	StartedAt    *time.Time      `json:"startedAt,omitempty"`
 	CompletedAt  *time.Time      `json:"completedAt,omitempty"` // omitted while running/failed

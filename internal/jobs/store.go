@@ -19,8 +19,7 @@ func timeNowUTC() time.Time { return time.Now().UTC() }
 
 // ownerInfo is the per-row ownership read back by reconcile.
 type ownerInfo struct {
-	Pid       int
-	StartedAt string
+	Pid int
 }
 
 const schemaDDL = `
@@ -111,7 +110,7 @@ func (s *regStore) UpsertJobs(recs []model.JobRecord, ownerPid int, ownerStarted
 	return tx.Commit()
 }
 
-const selectAllSQL = `SELECT jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid,ownerStartedAt FROM jobs;`
+const selectAllSQL = `SELECT jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid FROM jobs;`
 
 // AllJobs returns every row as records plus index-aligned owner info.
 func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
@@ -124,10 +123,10 @@ func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
 	var owners []ownerInfo
 	for rows.Next() {
 		var r model.JobRecord
-		var mode, status, startedAt, ownerStartedAt string
+		var mode, status, startedAt string
 		var ownerPid int
 		if err := rows.Scan(&r.JobID, &r.RunID, &r.SessionID, &mode, &r.CWD, &r.RunsDir, &r.WorktreePath,
-			&r.Branch, &r.PID, &status, &startedAt, &r.ErrorCode, &r.ErrorMessage, &ownerPid, &ownerStartedAt); err != nil {
+			&r.Branch, &r.PID, &status, &startedAt, &r.ErrorCode, &r.ErrorMessage, &ownerPid); err != nil {
 			return nil, nil, err
 		}
 		r.Mode = model.JobMode(mode)
@@ -136,7 +135,7 @@ func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
 			r.StartedAt = t
 		}
 		recs = append(recs, r)
-		owners = append(owners, ownerInfo{Pid: ownerPid, StartedAt: ownerStartedAt})
+		owners = append(owners, ownerInfo{Pid: ownerPid})
 	}
 	return recs, owners, rows.Err()
 }
