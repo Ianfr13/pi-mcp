@@ -141,10 +141,12 @@ func BuildState(recs []model.JobRecord, stateDir string, now time.Time) Dashboar
 
 func isTerminalStatus(s string) bool { return livestatus.IsTerminal(s) }
 
-// summarize derives one JobSummary, mirroring mcpserver.buildStatus precedence:
-// run file present -> livestatus.Derive(run.Status,...); run file absent ->
-// registry status (terminal surfaced; running -> blind with StartedAt staleness;
-// queued -> queued).
+// summarize derives one JobSummary. Status precedence: a terminal registry
+// status (completed/failed/aborted) is AUTHORITATIVE and wins — a run file or
+// snapshot can be a stale pre-terminal capture (an aborted write job's file still
+// said "running" when pi was killed). Otherwise: run file/snapshot present ->
+// livestatus.Derive(run.Status,...); absent -> registry status (running -> blind
+// with StartedAt staleness; queued -> queued).
 func summarize(rec model.JobRecord, now time.Time) JobSummary {
 	js := JobSummary{
 		JobID: rec.JobID, Mode: string(rec.Mode), CWD: rec.CWD,
@@ -186,7 +188,13 @@ func summarize(rec model.JobRecord, now time.Time) JobSummary {
 	if run.CurrentPhase != nil {
 		js.Phase = *run.CurrentPhase
 	}
-	js.Status = livestatus.Derive(run.Status, run.UpdatedAt, now, true, worktreeActive)
+	// Terminal registry status wins over the (possibly stale) run/snapshot status;
+	// otherwise derive from the run file for liveness. See the function doc.
+	if isTerminalStatus(string(rec.Status)) {
+		js.Status = string(rec.Status)
+	} else {
+		js.Status = livestatus.Derive(run.Status, run.UpdatedAt, now, true, worktreeActive)
+	}
 	js.AgentsTotal = len(run.Agents)
 	for i := range run.Agents {
 		if run.Agents[i].Status == "done" {

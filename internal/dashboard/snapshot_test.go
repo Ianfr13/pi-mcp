@@ -56,6 +56,40 @@ func TestBuildDetail_RendersFromSnapshotWhenFileGone(t *testing.T) {
 	}
 }
 
+// TestBuildDetail_TerminalRegistryStatusWinsOverStaleSnapshot pins that a job's
+// terminal registry status (e.g. aborted) is shown even when the snapshot is a
+// stale pre-terminal capture whose run file still said "running" — the case for
+// an aborted write job killed mid-run (worktree then pruned, file gone).
+func TestBuildDetail_TerminalRegistryStatusWinsOverStaleSnapshot(t *testing.T) {
+	run := model.Run{
+		RunID:  "r9",
+		Status: "running", // stale: pi was killed mid-run; file never reached terminal
+		Agents: []model.Agent{{ID: 1, CallIndex: 0, Label: "a", Model: "m", Status: "running"}},
+	}
+	snap, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := model.JobRecord{
+		JobID: "j9", RunID: "r9", Mode: model.ModeWrite, Branch: "pi-mcp/job-j9",
+		RunsDir:     filepath.Join(t.TempDir(), "absent"),
+		Status:      model.JobAborted,
+		ErrorCode:   "WORKFLOW_ABORTED",
+		StartedAt:   nowFresh.Add(-time.Minute),
+		RunSnapshot: snap,
+	}
+	d, ok := BuildDetail(rec, nowFresh)
+	if !ok {
+		t.Fatal("BuildDetail ok=false")
+	}
+	if d.Status != "aborted" {
+		t.Fatalf("status=%q want aborted (terminal registry status must win over stale snapshot)", d.Status)
+	}
+	if len(d.Agents) != 1 { // rich detail still comes from the snapshot
+		t.Fatalf("agents not rendered from snapshot: %+v", d.Agents)
+	}
+}
+
 // TestBuildDetail_NoSnapshotNoFile keeps the legit empty state: neither run file
 // nor snapshot -> summary-only (the real "No run data" case).
 func TestBuildDetail_NoSnapshotNoFile(t *testing.T) {
