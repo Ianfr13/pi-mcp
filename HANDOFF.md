@@ -29,6 +29,26 @@ claude mcp list                                        # verify: pi-mcp ✓ Conn
 ```
 The 4 tools: `pi_workflow(task, mode read|write, cwd)`, `pi_status(jobId|runId+cwd, wait?)`, `pi_list(cwd, limit)`, `pi_cancel(jobId)`.
 
+## Team runtime npm installer
+
+The repo includes an npm bootstrapper at `installer/npm`:
+
+```bash
+cd installer/npm
+npm test
+node bin/pi-mcp-runtime.js install --dry-run
+node bin/pi-mcp-runtime.js doctor
+```
+
+Target package name: `@ianfr13/pi-mcp-runtime`.
+Team install command after publishing:
+
+```bash
+npx @ianfr13/pi-mcp-runtime install
+```
+
+The installer configures Pi + the custom dynamic-workflows fork + pi-mcp, but intentionally does not configure secrets. Each teammate runs `pi` and `/login` or uses their preferred credential setup.
+
 ## Load-bearing gotchas (do NOT regress these)
 - **`pi -p` stdin MUST be `/dev/null`** — else it hangs forever waiting on stdin. (`internal/runner`)
 - **Env passthrough = `os.Environ()`** to the `pi` child (HOME/PATH/AGENT_VAULT_*/proxy+CA). Required for credential resolution; pi-mcp logs no stdout/stderr/run-file. (Documented as an intentional broad trust — see open issue.)

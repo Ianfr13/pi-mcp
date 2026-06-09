@@ -1,0 +1,33 @@
+{
+  "name": "@ianfr13/pi-mcp-runtime",
+  "version": "0.1.0",
+  "description": "Team bootstrapper for Pi runtime, custom dynamic workflows, and pi-mcp.",
+  "type": "module",
+  "bin": {
+    "pi-mcp-runtime": "./bin/pi-mcp-runtime.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ianfr13/pi-mcp.git",
+    "directory": "installer/npm"
+  },
+  "keywords": [
+    "pi",
+    "pi-mcp",
+    "dynamic-workflows",
+    "bootstrap"
+  ],
+  "license": "UNLICENSED",
+  "private": true
+}
