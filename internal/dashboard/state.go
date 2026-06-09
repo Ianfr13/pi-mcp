@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -12,6 +13,21 @@ import (
 	"pi-mcp/internal/model"
 	"pi-mcp/internal/runstore"
 )
+
+// runFileExists cheaply reports whether the on-disk run file (or its .bak) is
+// present, so the detail handler can skip the snapshot DB read when the live
+// file will be used anyway (the common case: running / recently-finished jobs).
+func runFileExists(runsDir, runID string) bool {
+	if runID == "" {
+		return false
+	}
+	p := filepath.Join(runsDir, runID+".json")
+	if _, err := os.Stat(p); err == nil {
+		return true
+	}
+	_, err := os.Stat(p + ".bak")
+	return err == nil
+}
 
 // Counts is the aggregate job tally for the overview.
 type Counts struct {

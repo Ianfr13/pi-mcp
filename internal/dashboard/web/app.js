@@ -3,6 +3,9 @@ let STATE = { jobs: [], counts: {}, stateDir: "" };
 let SELECTED = null;
 let DETAIL = null;          // cached detail of SELECTED
 let HIST = "24h";
+let LAST_DETAIL_FETCH = 0;  // throttle live-detail refetch (avoid per-tick panel rebuild)
+let LAST_HIST_SIG = "";     // skip rebuilding static history cards every tick
+const DETAIL_REFRESH_MS = 3000;
 
 const $ = (s) => document.querySelector(s);
 const TERMINAL = new Set(["completed", "failed", "aborted"]);
@@ -100,7 +103,13 @@ function renderRail() {
   const hist = jobs.filter((j) => TERMINAL.has(j.status) && within(j.completedAt || j.startedAt, HIST));
   $("#livecount").textContent = live.length;
   $("#live").innerHTML = live.length ? live.map(jobCard).join("") : `<div class="empty">No active jobs.</div>`;
-  $("#history").innerHTML = hist.length ? hist.map(jobCard).join("") : `<div class="empty">No jobs in ${HIST}.</div>`;
+  // History cards are static between completions; only rebuild when their
+  // membership, the selection, or the time filter changes — not every live tick.
+  const sig = HIST + "|" + (SELECTED || "") + "|" + hist.map((j) => j.jobId + j.status).join(",");
+  if (sig !== LAST_HIST_SIG) {
+    LAST_HIST_SIG = sig;
+    $("#history").innerHTML = hist.length ? hist.map(jobCard).join("") : `<div class="empty">No jobs in ${HIST}.</div>`;
+  }
   for (const el of document.querySelectorAll(".card")) {
     el.onclick = () => select(el.dataset.id);
   }
@@ -108,7 +117,7 @@ function renderRail() {
 
 /* ---------- selection ---------- */
 function select(id) {
-  SELECTED = id; DETAIL = null;
+  SELECTED = id; DETAIL = null; LAST_DETAIL_FETCH = Date.now();
   renderRail();
   loadDetail(id);
 }
@@ -280,8 +289,15 @@ function applyState(st) {
   renderStats(); renderRail();
   if (!SELECTED) { renderPanel(); return; }
   const j = STATE.jobs.find((x) => x.jobId === SELECTED);
-  if (j && !TERMINAL.has(j.status)) loadDetail(SELECTED);   // live job → refresh detail
-  else if (!DETAIL) renderPanel();
+  if (j && !TERMINAL.has(j.status)) {
+    // Live job: refresh the detail, but throttled so the panel does not fully
+    // re-render (and snap shut any open <details>) on every 1s SSE tick.
+    const now = Date.now();
+    if (now - LAST_DETAIL_FETCH >= DETAIL_REFRESH_MS) {
+      LAST_DETAIL_FETCH = now;
+      loadDetail(SELECTED);
+    }
+  } else if (!DETAIL) renderPanel();
 }
 
 function setConn(ok) {

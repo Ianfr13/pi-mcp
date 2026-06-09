@@ -87,11 +87,13 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	for i := range recs {
 		if recs[i].JobID == id {
 			rec := recs[i]
-			// On-demand: pull this one job's persisted run snapshot so BuildDetail can
-			// render it even if the on-disk run file is gone. Best-effort — any error
-			// (incl. an older DB without the column) just leaves the snapshot empty.
-			if snap, err := ReadJobSnapshot(s.poller.registryPath, id); err == nil && len(snap) > 0 {
-				rec.RunSnapshot = snap
+			// Only consult the persisted snapshot when the on-disk run file is gone.
+			// For a live or recently-finished job the file is present and BuildDetail
+			// reads it directly, so we skip the second registry DB open entirely.
+			if !runFileExists(rec.RunsDir, rec.RunID) {
+				if snap, err := ReadJobSnapshot(s.poller.registryPath, id); err == nil && len(snap) > 0 {
+					rec.RunSnapshot = snap
+				}
 			}
 			d, ok := BuildDetail(rec, s.poller.now())
 			if !ok {
