@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"io/fs"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -80,12 +81,16 @@ type JobDetail struct {
 }
 
 // readRun is the run-file loader seam (overridable in tests). It builds the path
-// <runsDir>/<runId>.json and decodes it with runstore (which falls back to .bak).
+// <runsDir>/<runId>.json and decodes it with runstore.ReadRun, which transparently
+// recovers from the sibling .bak snapshot when the primary .json is missing or
+// corrupt (pi writes .bak alongside). NOTE: do NOT swap this for runstore.Load —
+// Load short-circuits on os.Stat(.json) and never reaches the .bak fallback, so a
+// .json-missing/.bak-present run would wrongly read as "no run data".
 var readRun = func(runsDir, runID string) (*model.Run, error) {
 	if runID == "" {
 		return nil, fs.ErrNotExist
 	}
-	return runstore.Load(runsDir, runID)
+	return runstore.ReadRun(filepath.Join(runsDir, runID+".json"))
 }
 
 // BuildState derives the light snapshot from the registry records.
