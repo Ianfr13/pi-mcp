@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
+	"time"
 )
 
 // SpawnConfig holds everything needed to launch one pi subprocess (§4).
@@ -76,6 +78,22 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	cmd.Dir = cfg.CWD
 	cmd.Env = os.Environ() // passthrough (§4): HOME, PATH, AGENT_VAULT_*, proxy/CA.
 	cmd.Stderr = cfg.Stderr
+
+	// Start pi as its own process-group leader so a cancel can SIGKILL the WHOLE
+	// group — pi's agent-fleet children included — not just the pi process. An
+	// orphaned grandchild that keeps writing a worktree is the data-loss vector
+	// reconcile must otherwise defend against.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative pid => signal the process group led by the child.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// If a killed grandchild keeps the stdout pipe open, force-stop the wait after
+	// a short grace period so Wait() never blocks forever.
+	cmd.WaitDelay = 10 * time.Second
 
 	// CRITICAL: stdin = /dev/null. A nil Stdin inherits the parent's stdin and
 	// risks the documented hang; an explicit /dev/null guarantees immediate EOF.

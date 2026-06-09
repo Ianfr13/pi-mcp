@@ -119,9 +119,6 @@ func TestParseStream_OversizedLineDoesNotAbort(t *testing.T) {
 	if !got.WorkflowFound {
 		t.Fatalf("WorkflowFound = false, want true (oversized line must not abort)")
 	}
-	if got.Result == nil {
-		t.Fatalf("Result = nil, want extracted workflow result")
-	}
 }
 
 func TestParseStream_NonWorkflowToolEndIgnored(t *testing.T) {

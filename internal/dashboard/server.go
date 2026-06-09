@@ -57,7 +57,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := webFS.ReadFile("web/index.html")
 	if err != nil {
-		http.Error(w, "index missing", 500)
+		http.Error(w, "index missing", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -81,12 +81,21 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := s.poller.readRegistry(s.poller.registryPath)
 	if err != nil {
-		http.Error(w, "registry unavailable", 503)
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	for i := range recs {
 		if recs[i].JobID == id {
-			d, ok := BuildDetail(recs[i], s.poller.now())
+			rec := recs[i]
+			// Only consult the persisted snapshot when the on-disk run file is gone.
+			// For a live or recently-finished job the file is present and BuildDetail
+			// reads it directly, so we skip the second registry DB open entirely.
+			if !runFileExists(rec.RunsDir, rec.RunID) {
+				if snap, err := ReadJobSnapshot(s.poller.registryPath, id); err == nil && len(snap) > 0 {
+					rec.RunSnapshot = snap
+				}
+			}
+			d, ok := BuildDetail(rec, s.poller.now())
 			if !ok {
 				break
 			}
@@ -100,7 +109,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", 500)
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -144,7 +153,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	b, err := jsonMarshal(v)
 	if err != nil {
-		http.Error(w, "encode error", 500)
+		http.Error(w, "encode error", http.StatusInternalServerError)
 		return
 	}
 	_, _ = w.Write(b)

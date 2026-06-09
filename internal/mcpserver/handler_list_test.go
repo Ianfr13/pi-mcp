@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"testing"
-	"time"
 
 	"pi-mcp/internal/model"
 )
@@ -56,16 +55,14 @@ func TestList_StorePassesResolvedLimit(t *testing.T) {
 	if store.gotLimit != 5 {
 		t.Fatalf("explicit limit not passed, got %d", store.gotLimit)
 	}
-	_ = time.Now
 }
 
 type capturingStore struct {
 	*fakeStore
-	gotCWD   string
 	gotLimit int
 }
 
 func (c *capturingStore) ListItems(cwd string, limit int) ([]model.ListItem, error) {
-	c.gotCWD, c.gotLimit = cwd, limit
+	c.gotLimit = limit
 	return c.fakeStore.ListItems(cwd, limit)
 }

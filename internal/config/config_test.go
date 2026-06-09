@@ -10,11 +10,14 @@ func TestConstants(t *testing.T) {
 	if DefaultConcurrencyCap != 4 {
 		t.Errorf("cap = %d, want 4", DefaultConcurrencyCap)
 	}
-	if StaleThreshold != 300*time.Second {
-		t.Errorf("StaleThreshold = %v, want 300s", StaleThreshold)
+	if StaleThreshold != 30*time.Minute {
+		t.Errorf("StaleThreshold = %v, want 30m", StaleThreshold)
 	}
-	if DefaultAgentTimeoutMs != 300000 {
-		t.Errorf("DefaultAgentTimeoutMs = %d", DefaultAgentTimeoutMs)
+	if ForcedAgentTimeoutMs != 1_200_000 {
+		t.Errorf("ForcedAgentTimeoutMs = %d, want 1200000", ForcedAgentTimeoutMs)
+	}
+	if StaleThreshold <= time.Duration(ForcedAgentTimeoutMs)*time.Millisecond {
+		t.Errorf("StaleThreshold (%v) must exceed the injected agent timeout (%dms)", StaleThreshold, ForcedAgentTimeoutMs)
 	}
 	if WaitCap != 60*time.Second {
 		t.Errorf("WaitCap = %v, want 60s", WaitCap)
@@ -45,7 +48,8 @@ func TestForcingPromptTemplate(t *testing.T) {
 		"background:false",
 		"Do not use background:true",
 		"INLINE",
-		"tokenBudget", // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
+		"tokenBudget",         // orchestrator must NOT cap the run by tokens (avoids TOKEN_BUDGET_EXHAUSTED)
+		"per-agent timeoutMs", // orchestrator must NOT re-introduce the 5-min kill per agent
 		"{{CONTRACT}}",
 		"{{TASK}}",
 		"{{CONTEXT}}",
@@ -120,5 +124,12 @@ func TestRegistryPath(t *testing.T) {
 	want := "/xdg/state/pi-mcp/registry.db"
 	if got := RegistryPath(); got != want {
 		t.Errorf("RegistryPath()=%q want %q", got, want)
+	}
+}
+
+func TestRegistryPathFor(t *testing.T) {
+	want := "/custom/pi-mcp/registry.db"
+	if got := RegistryPathFor("/custom"); got != want {
+		t.Errorf("RegistryPathFor(/custom)=%q want %q", got, want)
 	}
 }

@@ -23,19 +23,23 @@ type Config struct {
 	PersistPath  string           // path to the registry JSON file
 	WorktreeRoot string           // root under which pi-mcp/job-* worktrees live (reconcile scan)
 	Now          func() time.Time // injectable clock; nil -> time.Now
+	// SnapshotRun reads the final run file (runsDir,runID) and returns its
+	// canonical JSON for persistence into the registry at terminal time, or nil
+	// when there is no readable run file. Injected by the app (runstore-backed);
+	// nil disables snapshotting (tests).
+	SnapshotRun func(runsDir, runID string) []byte
 }
 
 // Registry is the concurrency-capped, disk-persisted job map.
 type Registry struct {
-	mu           sync.Mutex
-	jobs         map[string]*Job // jobID -> Job
-	queue        []*Job          // FIFO of queued jobs awaiting a slot
-	slots        chan struct{}   // buffered to cap; a token == an occupied running slot
-	cap          int
-	persistPath  string
-	worktreeRoot string
-	now          func() time.Time
-	closed       bool
+	mu     sync.Mutex
+	jobs   map[string]*Job // jobID -> Job
+	queue  []*Job          // FIFO of queued jobs awaiting a slot
+	slots  chan struct{}   // buffered to cap; a token == an occupied running slot
+	cap    int
+	now    func() time.Time
+	closed bool
+	wg     sync.WaitGroup // tracks runAttempts goroutines; Close waits on it before store.Close
 
 	launcher   Launcher
 	correlator Correlator
@@ -50,6 +54,10 @@ type Registry struct {
 	store          *regStore
 	ownerPid       int
 	ownerStartedAt string
+
+	// snapshotRun captures the final run file into the registry at terminal time
+	// (nil disables). See Config.SnapshotRun.
+	snapshotRun func(runsDir, runID string) []byte
 }
 
 // NewRegistry builds a Registry over a SQLite store at cfg.PersistPath. cfg.Cap<=0
@@ -71,8 +79,6 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, err
 		jobs:           make(map[string]*Job),
 		slots:          make(chan struct{}, capN),
 		cap:            capN,
-		persistPath:    cfg.PersistPath,
-		worktreeRoot:   cfg.WorktreeRoot,
 		now:            now,
 		launcher:       l,
 		correlator:     c,
@@ -81,6 +87,7 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, err
 		store:          store,
 		ownerPid:       os.Getpid(),
 		ownerStartedAt: now().UTC().Format(time.RFC3339Nano),
+		snapshotRun:    cfg.SnapshotRun,
 	}, nil
 }
 
@@ -198,9 +205,18 @@ func (r *Registry) start(j *Job) {
 	}
 
 	r.mu.Lock()
+	if r.closed {
+		// Close() raced ahead: do not spawn a new job goroutine (its terminal flush
+		// could hit a closed store). The job is already flushed by Close; cancel its
+		// context so the just-launched pi process (group) is reaped.
+		r.mu.Unlock()
+		cancel()
+		return
+	}
 	j.Record.PID = pid
 	j.updatedAt = r.now()
 	_ = r.flushUnlocked()
+	r.wg.Add(1) // under mu, while !closed, so Close's Wait() observes every started goroutine
 	r.mu.Unlock()
 
 	go r.runAttempts(j, ctx, cancel, spec, sessionCh, wait)
@@ -214,6 +230,7 @@ func (r *Registry) start(j *Job) {
 // job. It calls finish() exactly once. sessionCh/wait belong to the current
 // attempt; the first pair comes from start().
 func (r *Registry) runAttempts(j *Job, ctx context.Context, cancel context.CancelFunc, spec Spec, sessionCh <-chan string, wait func() error) {
+	defer r.wg.Done()
 	for attempt := 0; ; attempt++ {
 		// Per-attempt correlate context: stops this attempt's poll without tearing
 		// down the job ctx (which a retry reuses for the next launch).
@@ -398,21 +415,26 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	}
 	var next *Job
 	if wasRunningSlot {
-		// Free the slot, then promote the next queued job (reuse the same slot).
+		// Free the slot.
 		select {
 		case <-r.slots:
 		default:
 		}
-		next = r.dequeueUnlocked()
-		if next != nil {
-			select {
-			case r.slots <- struct{}{}:
-				r.startingUnlocked(next)
-			default:
-				// Should not happen (we just freed one); requeue defensively.
-				next.markUnlocked(model.JobQueued, r.now())
-				r.queue = append([]*Job{next}, r.queue...)
-				next = nil
+		// Do NOT promote a queued job once Close has begun: a goroutine started here
+		// (via r.start(next) below) could flush after store.Close(). Queued jobs are
+		// left for the next server's reconcile.
+		if !r.closed {
+			next = r.dequeueUnlocked()
+			if next != nil {
+				select {
+				case r.slots <- struct{}{}:
+					r.startingUnlocked(next)
+				default:
+					// Should not happen (we just freed one); requeue defensively.
+					next.markUnlocked(model.JobQueued, r.now())
+					r.queue = append([]*Job{next}, r.queue...)
+					next = nil
+				}
 			}
 		}
 	}
@@ -423,8 +445,21 @@ func (r *Registry) finish(j *Job, status model.JobStatus, errCode, errMsg string
 	worktree := j.Record.WorktreePath
 	branch := j.Record.Branch
 	finalStatus := j.Record.Status
+	jobID := j.Record.JobID
+	runsDir := j.Record.RunsDir
+	runID := j.Record.RunID
 	_ = r.flushUnlocked()
 	r.mu.Unlock()
+
+	// Best-effort: snapshot the final run file into the registry so the dashboard
+	// can still render this job after the on-disk run file is gone (temp cwd
+	// cleaned / worktree pruned). Captured BEFORE any worktree prune below so an
+	// aborted write job's run file is still readable.
+	if r.snapshotRun != nil && runID != "" {
+		if snap := r.snapshotRun(runsDir, runID); len(snap) > 0 {
+			_ = r.store.SaveSnapshot(jobID, snap, r.ownerPid)
+		}
+	}
 
 	if isWrite && finalStatus == model.JobAborted {
 		_ = r.pruner.Prune(worktree, branch)
@@ -504,6 +539,7 @@ func (r *Registry) Close() error {
 	for _, c := range cancels {
 		c()
 	}
+	r.wg.Wait() // every job goroutine has now flushed its terminal state; safe to close the store
 	_ = r.store.Close()
 	return err
 }

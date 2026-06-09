@@ -91,43 +91,6 @@ func TestOptionalsAbsentDoNotError(t *testing.T) {
 	}
 }
 
-// TestStreamEventDecode pins the JSONL event envelope the parser consumes:
-// session id, and tool_execution_end(toolName="workflow") with content[].text.
-func TestStreamEventDecode(t *testing.T) {
-	const sessionLine = `{"type":"session","id":"019ea2fe-db76-7e31-85ad-9718d3fbc23a","version":1,"cwd":"/repo"}`
-	var se StreamEvent
-	if err := json.Unmarshal([]byte(sessionLine), &se); err != nil {
-		t.Fatalf("unmarshal session event: %v", err)
-	}
-	if se.Type != "session" {
-		t.Errorf("Type = %q, want session", se.Type)
-	}
-	if se.ID != "019ea2fe-db76-7e31-85ad-9718d3fbc23a" {
-		t.Errorf("ID = %q", se.ID)
-	}
-
-	const toolLine = `{"type":"tool_execution_end","toolName":"workflow","isError":false,"result":{"content":[{"type":"text","text":"hello"}]}}`
-	var te StreamEvent
-	if err := json.Unmarshal([]byte(toolLine), &te); err != nil {
-		t.Fatalf("unmarshal tool_execution_end: %v", err)
-	}
-	if te.ToolName != "workflow" {
-		t.Errorf("ToolName = %q", te.ToolName)
-	}
-	if te.IsError {
-		t.Error("IsError = true, want false")
-	}
-	if te.Result == nil {
-		t.Fatal("Result nil on tool_execution_end")
-	}
-	if len(te.Result.Content) != 1 {
-		t.Fatalf("len(Content) = %d", len(te.Result.Content))
-	}
-	if te.Result.Content[0].Type != "text" || te.Result.Content[0].Text != "hello" {
-		t.Errorf("content[0] = %+v", te.Result.Content[0])
-	}
-}
-
 // TestJobRecordRoundTrip pins the persisted registry record wire shape (§8).
 func TestJobRecordRoundTrip(t *testing.T) {
 	rec := JobRecord{

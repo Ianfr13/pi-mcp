@@ -216,5 +216,3 @@ func TestCancelUnknownJobErrors(t *testing.T) {
 		t.Fatal("expected error cancelling unknown job")
 	}
 }
-
-var _ = time.Second

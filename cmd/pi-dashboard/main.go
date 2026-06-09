@@ -21,7 +21,7 @@ const defaultPort = "7777"
 
 func main() {
 	addrFlag := flag.String("addr", "", "explicit bind address host:port (default: detected Tailscale IP + :7777)")
-	stateDir := flag.String("state-dir", config.StateDir(), "pi-mcp state dir (holds pi-mcp/registry.json)")
+	stateDir := flag.String("state-dir", config.StateDir(), "pi-mcp state dir (holds pi-mcp/registry.db)")
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "pi-dashboard ", log.LstdFlags)
@@ -34,11 +34,7 @@ func main() {
 		logger.Fatalf("resolve bind address: %v", err)
 	}
 
-	registryPath := config.RegistryPath()
-	// honor an overridden state dir for the registry path too
-	if *stateDir != config.StateDir() {
-		registryPath = filepathJoin(*stateDir, "pi-mcp", "registry.json")
-	}
+	registryPath := registryPathFor(*stateDir)
 
 	hub := dashboard.NewHub()
 	poller := dashboard.NewPoller(registryPath, *stateDir, hub)
@@ -64,23 +60,6 @@ func main() {
 	}
 }
 
-// resolveAddr returns the explicit addr when given, else detects the Tailscale
-// IP (one shot) and appends :7777. detect is injectable for tests; nil uses the
-// production detector.
-func resolveAddr(explicit string, detect func() (string, error)) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if detect == nil {
-		detect = dashboard.DetectTailscaleIP
-	}
-	ip, err := detect()
-	if err != nil {
-		return "", err
-	}
-	return ip + ":" + defaultPort, nil
-}
-
 // resolveAddrWait is the production path: explicit addr binds immediately; an
 // empty addr WAITS for the tailnet IP (never falls back to LAN).
 func resolveAddrWait(ctx context.Context, explicit string, logger *log.Logger) (string, error) {
@@ -96,14 +75,9 @@ func resolveAddrWait(ctx context.Context, explicit string, logger *log.Logger) (
 	return ip + ":" + defaultPort, nil
 }
 
-// filepathJoin avoids importing path/filepath at the top for one call site.
-func filepathJoin(parts ...string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += "/"
-		}
-		out += p
-	}
-	return out
+// registryPathFor resolves the registry DB path for a (possibly overridden)
+// state dir. Always the canonical .db, never the legacy .json — a non-default
+// --state-dir previously mis-built "registry.json" and split-brained the view.
+func registryPathFor(stateDir string) string {
+	return config.RegistryPathFor(stateDir)
 }

@@ -27,7 +27,6 @@ type Run struct {
 	Agents       []Agent         `json:"agents"`
 	Journal      []JournalEntry  `json:"journal"`
 	Logs         []string        `json:"logs,omitempty"`
-	Script       string          `json:"script,omitempty"`
 	Result       json.RawMessage `json:"result,omitempty"` // workflow-defined shape; authoritative when completed
 	StartedAt    *time.Time      `json:"startedAt,omitempty"`
 	CompletedAt  *time.Time      `json:"completedAt,omitempty"` // omitted while running/failed
@@ -92,40 +91,6 @@ type AuthoringInfo struct {
 	UpdatedAt string `json:"updatedAt"` // RFC3339Nano UTC
 }
 
-// ---------- pi --mode json stream events (§7) ----------
-// Line-delimited JSON; switch on .Type; ignore unknown types.
-
-// StreamEvent is the generic envelope for one JSONL line.
-type StreamEvent struct {
-	Type    string `json:"type"`              // session|agent_start|agent_end|turn_start|turn_end|message_start|message_end|tool_execution_start|tool_execution_end|...
-	ID      string `json:"id,omitempty"`      // on type=="session": == run.sessionId
-	Version int    `json:"version,omitempty"` // session events
-	CWD     string `json:"cwd,omitempty"`     // session events
-	// tool_execution_* fields:
-	ToolName   string          `json:"toolName,omitempty"`
-	ToolCallID string          `json:"toolCallId,omitempty"`
-	IsError    bool            `json:"isError,omitempty"`
-	Result     *ToolResult     `json:"result,omitempty"`  // on tool_execution_end
-	Args       json.RawMessage `json:"args,omitempty"`    // on tool_execution_start (workflow script etc.)
-	Message    json.RawMessage `json:"message,omitempty"` // message_start/message_end payload (unparsed here)
-}
-
-// ToolResult is tool_execution_end(toolName=="workflow").result. The workflow
-// final result lives in Content[0].Text as: header line + a ```json``` block.
-// NOTE (validated §7): it does NOT carry details.result/details.runId — extract
-// from Content[0].Text by stripping the "✓ Workflow ... finished" header and
-// parsing the fenced json block (fallback: raw text).
-type ToolResult struct {
-	Content []ContentBlock  `json:"content"`
-	Details json.RawMessage `json:"details,omitempty"`
-}
-
-// ContentBlock is one block of a ToolResult.Content / message content.
-type ContentBlock struct {
-	Type string `json:"type"` // text|thinking|toolCall|...
-	Text string `json:"text,omitempty"`
-}
-
 // ---------- job registry record, persisted to disk (§8) ----------
 
 // JobStatus is the pi-mcp-level job lifecycle status surfaced to MCP clients.
@@ -163,6 +128,13 @@ type JobRecord struct {
 	StartedAt    time.Time `json:"startedAt"`
 	ErrorCode    string    `json:"errorCode,omitempty"` // one of config error-code consts
 	ErrorMessage string    `json:"errorMessage,omitempty"`
+
+	// RunSnapshot is the run file pi wrote, captured into the registry at terminal
+	// time so the dashboard can still render this job's detail after the on-disk
+	// run file is gone (temp cwd cleaned / worktree pruned). DB-only carrier:
+	// never serialized on the wire, never written by the bulk upsert (only the
+	// targeted SaveSnapshot path), and only populated on the on-demand detail read.
+	RunSnapshot []byte `json:"-"`
 }
 
 // ---------- MCP tool I/O structs (§5) ----------

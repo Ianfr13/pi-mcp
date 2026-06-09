@@ -23,7 +23,7 @@ func ReadRegistry(dbPath string) ([]model.JobRecord, error) {
 	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
 		return []model.JobRecord{}, nil
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)&mode=ro")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)&mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -49,4 +49,30 @@ func ReadRegistry(dbPath string) ([]model.JobRecord, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ReadJobSnapshot returns the persisted run snapshot for one job — the run-file
+// JSON pi-mcp captured at terminal time — or nil when absent. Read-only and
+// fetched on demand (only when a detail view is opened), so the per-second
+// poller never pays for these potentially-large blobs. Tolerates an older DB
+// whose schema predates the column by returning the query error to the caller,
+// which treats any failure as "no snapshot".
+func ReadJobSnapshot(dbPath, jobID string) ([]byte, error) {
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)&mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var snap []byte
+	err = db.QueryRow(`SELECT runSnapshot FROM jobs WHERE jobId=?`, jobID).Scan(&snap)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return snap, nil
 }

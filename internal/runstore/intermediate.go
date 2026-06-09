@@ -42,16 +42,17 @@ func Intermediates(r *model.Run, maxBytes int) []model.IntermediateResult {
 			// Decode the stored json.RawMessage into `any` so model.IntermediateResult
 			// (whose Result field is `any` for go-sdk output-schema validation)
 			// carries a real object/array/scalar, not raw bytes.
-			ir.Result = rawToAny(j.Result)
+			ir.Result = RawToAny(j.Result)
 		}
 		out = append(out, ir)
 	}
 	return out
 }
 
-// rawToAny decodes a stored json.RawMessage into an `any` (object/array/scalar).
-// Empty or undecodable input yields nil.
-func rawToAny(raw json.RawMessage) any {
+// RawToAny decodes a stored json.RawMessage into an `any` (object/array/scalar).
+// Empty or undecodable input yields nil. Single home for this helper — mcpserver
+// and dashboard call it instead of keeping private copies.
+func RawToAny(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return nil
 	}

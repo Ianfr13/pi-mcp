@@ -2,18 +2,41 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"pi-mcp/internal/config"
 	"pi-mcp/internal/jobs"
 	"pi-mcp/internal/mcpserver"
 	"pi-mcp/internal/model"
+	"pi-mcp/internal/runstore"
 	"pi-mcp/internal/worktree"
 )
+
+// maxSnapshotBytes caps the run-file snapshot persisted into the registry at
+// terminal time. Run files are normally a few KB; an enormous one (huge fleet
+// with large journal results) is skipped rather than bloating the registry DB —
+// the job simply has no post-cleanup detail, same as before this feature.
+const maxSnapshotBytes = 4 << 20 // 4 MiB
+
+// snapshotRunFile reads the final run file (runsDir,runID) and returns its
+// canonical JSON for persistence into the registry (jobs.Config.SnapshotRun).
+// nil when there is no readable run file or it exceeds maxSnapshotBytes. Uses
+// runstore.ReadRun so the sibling .bak snapshot is used if the primary is gone.
+func snapshotRunFile(runsDir, runID string) []byte {
+	run, err := runstore.ReadRun(filepath.Join(runsDir, runID+".json"))
+	if err != nil {
+		return nil
+	}
+	b, err := json.Marshal(run)
+	if err != nil || len(b) > maxSnapshotBytes {
+		return nil
+	}
+	return b
+}
 
 // newJobID mints a fresh job id (== the registry's id scheme) so the worktree
 // branch created BEFORE submit (pi-mcp/job-<id>) matches the registry record.
@@ -67,7 +90,7 @@ func (a *jobsAdapter) Submit(ctx context.Context, in mcpserver.JobSpec) (model.J
 		CWD:     in.CWD,
 		Task:    in.Task,
 		Context: in.Context,
-		RunsDir: filepath.Join(in.CWD, config.RunsDirRel),
+		RunsDir: runstore.RunsDir(in.CWD),
 	}
 	if in.Mode == model.ModeWrite {
 		mgr, err := worktree.New(ctx, in.CWD) // fail-before-spawn: NOT_A_GIT_REPO
@@ -85,7 +108,7 @@ func (a *jobsAdapter) Submit(ctx context.Context, in mcpserver.JobSpec) (model.J
 		spec.Worktree = h.Path
 		spec.Branch = h.Branch
 		spec.CWD = h.Path
-		spec.RunsDir = filepath.Join(h.Path, config.RunsDirRel)
+		spec.RunsDir = runstore.RunsDir(h.Path)
 		a.remember(id, mgr, h)
 	}
 	return a.reg.Submit(ctx, spec)

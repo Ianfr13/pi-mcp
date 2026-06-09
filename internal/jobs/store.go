@@ -19,8 +19,7 @@ func timeNowUTC() time.Time { return time.Now().UTC() }
 
 // ownerInfo is the per-row ownership read back by reconcile.
 type ownerInfo struct {
-	Pid       int
-	StartedAt string
+	Pid int
 }
 
 const schemaDDL = `
@@ -40,7 +39,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   errorMessage  TEXT NOT NULL DEFAULT '',
   ownerPid      INTEGER NOT NULL DEFAULT 0,
   ownerStartedAt TEXT NOT NULL DEFAULT '',
-  updatedAt     TEXT NOT NULL
+  updatedAt     TEXT NOT NULL,
+  runSnapshot   BLOB NOT NULL DEFAULT ''
 );`
 
 // regStore is the SQLite-backed job registry persistence layer. Multiple
@@ -57,7 +57,7 @@ func OpenStore(path string) (*regStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("store: mkdir: %w", err)
 	}
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open: %w", err)
@@ -65,6 +65,10 @@ func OpenStore(path string) (*regStore, error) {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
+	}
+	if err := ensureRunSnapshotColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate runSnapshot: %w", err)
 	}
 	s := &regStore{db: db, path: path}
 	if err := s.migrateLegacyJSON(); err != nil {
@@ -76,6 +80,48 @@ func OpenStore(path string) (*regStore, error) {
 
 func (s *regStore) Close() error { return s.db.Close() }
 
+// ensureRunSnapshotColumn adds the runSnapshot column to a pre-existing jobs
+// table that predates it (CREATE TABLE IF NOT EXISTS never alters an existing
+// table). Idempotent: a no-op when the column is already present.
+func ensureRunSnapshotColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "runSnapshot" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE jobs ADD COLUMN runSnapshot BLOB NOT NULL DEFAULT ''`)
+	return err
+}
+
+const saveSnapshotSQL = `UPDATE jobs SET runSnapshot=? WHERE jobId=? AND ownerPid=?;`
+
+// SaveSnapshot persists the final run-file JSON for a job THIS server owns, so a
+// reader (the dashboard) can render the job after the on-disk run file is gone.
+// Owner-guarded so it never clobbers a row owned by another live server. A row
+// that does not match (wrong owner / unknown job) is silently a no-op.
+func (s *regStore) SaveSnapshot(jobID string, snapshot []byte, ownerPid int) error {
+	_, err := s.db.Exec(saveSnapshotSQL, snapshot, jobID, ownerPid)
+	return err
+}
+
 const upsertSQL = `
 INSERT INTO jobs (jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid,ownerStartedAt,updatedAt)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -84,7 +130,8 @@ ON CONFLICT(jobId) DO UPDATE SET
   runsDir=excluded.runsDir, worktreePath=excluded.worktreePath, branch=excluded.branch, pid=excluded.pid,
   status=excluded.status, startedAt=excluded.startedAt, errorCode=excluded.errorCode,
   errorMessage=excluded.errorMessage, ownerPid=excluded.ownerPid, ownerStartedAt=excluded.ownerStartedAt,
-  updatedAt=excluded.updatedAt;`
+  updatedAt=excluded.updatedAt
+WHERE jobs.ownerPid=excluded.ownerPid OR jobs.ownerPid=0;`
 
 // UpsertJobs writes the caller's own records in one transaction, stamping owner.
 // It never deletes or rewrites rows it does not own.
@@ -110,7 +157,7 @@ func (s *regStore) UpsertJobs(recs []model.JobRecord, ownerPid int, ownerStarted
 	return tx.Commit()
 }
 
-const selectAllSQL = `SELECT jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid,ownerStartedAt FROM jobs;`
+const selectAllSQL = `SELECT jobId,runId,sessionId,mode,cwd,runsDir,worktreePath,branch,pid,status,startedAt,errorCode,errorMessage,ownerPid FROM jobs;`
 
 // AllJobs returns every row as records plus index-aligned owner info.
 func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
@@ -123,10 +170,10 @@ func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
 	var owners []ownerInfo
 	for rows.Next() {
 		var r model.JobRecord
-		var mode, status, startedAt, ownerStartedAt string
+		var mode, status, startedAt string
 		var ownerPid int
 		if err := rows.Scan(&r.JobID, &r.RunID, &r.SessionID, &mode, &r.CWD, &r.RunsDir, &r.WorktreePath,
-			&r.Branch, &r.PID, &status, &startedAt, &r.ErrorCode, &r.ErrorMessage, &ownerPid, &ownerStartedAt); err != nil {
+			&r.Branch, &r.PID, &status, &startedAt, &r.ErrorCode, &r.ErrorMessage, &ownerPid); err != nil {
 			return nil, nil, err
 		}
 		r.Mode = model.JobMode(mode)
@@ -135,7 +182,7 @@ func (s *regStore) AllJobs() ([]model.JobRecord, []ownerInfo, error) {
 			r.StartedAt = t
 		}
 		recs = append(recs, r)
-		owners = append(owners, ownerInfo{Pid: ownerPid, StartedAt: ownerStartedAt})
+		owners = append(owners, ownerInfo{Pid: ownerPid})
 	}
 	return recs, owners, rows.Err()
 }
@@ -176,7 +223,10 @@ func (s *regStore) migrateLegacyJSON() error {
 		Jobs []model.JobRecord `json:"jobs"`
 	}
 	if err := json.Unmarshal(data, &pf); err != nil {
-		return fmt.Errorf("decode legacy: %w", err)
+		// Corrupt legacy file: quarantine it so we don't retry-and-fail every boot,
+		// then continue with an empty registry.
+		_ = os.Rename(legacy, legacy+".corrupt")
+		return fmt.Errorf("decode legacy (quarantined to %s.corrupt): %w", legacy, err)
 	}
 	// Terminalize any non-terminal legacy job before import: they belong to the
 	// pre-SQLite world and cannot be resumed here. Marking them terminal means
@@ -198,5 +248,11 @@ func (s *regStore) migrateLegacyJSON() error {
 			return fmt.Errorf("import legacy: %w", err)
 		}
 	}
-	return os.Rename(legacy, legacy+".migrated")
+	if err := os.Rename(legacy, legacy+".migrated"); err != nil {
+		if os.IsNotExist(err) {
+			return nil // a concurrent migrator already moved it — not an error
+		}
+		return err
+	}
+	return nil
 }

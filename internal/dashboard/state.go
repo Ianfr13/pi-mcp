@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -12,6 +13,21 @@ import (
 	"pi-mcp/internal/model"
 	"pi-mcp/internal/runstore"
 )
+
+// runFileExists cheaply reports whether the on-disk run file (or its .bak) is
+// present, so the detail handler can skip the snapshot DB read when the live
+// file will be used anyway (the common case: running / recently-finished jobs).
+func runFileExists(runsDir, runID string) bool {
+	if runID == "" {
+		return false
+	}
+	p := filepath.Join(runsDir, runID+".json")
+	if _, err := os.Stat(p); err == nil {
+		return true
+	}
+	_, err := os.Stat(p + ".bak")
+	return err == nil
+}
 
 // Counts is the aggregate job tally for the overview.
 type Counts struct {
@@ -81,7 +97,11 @@ type JobDetail struct {
 }
 
 // readRun is the run-file loader seam (overridable in tests). It builds the path
-// <runsDir>/<runId>.json and decodes it with runstore (which falls back to .bak).
+// <runsDir>/<runId>.json and decodes it with runstore.ReadRun, which transparently
+// recovers from the sibling .bak snapshot when the primary .json is missing or
+// corrupt (pi writes .bak alongside). NOTE: do NOT swap this for runstore.Load —
+// Load short-circuits on os.Stat(.json) and never reaches the .bak fallback, so a
+// .json-missing/.bak-present run would wrongly read as "no run data".
 var readRun = func(runsDir, runID string) (*model.Run, error) {
 	if runID == "" {
 		return nil, fs.ErrNotExist
@@ -121,10 +141,12 @@ func BuildState(recs []model.JobRecord, stateDir string, now time.Time) Dashboar
 
 func isTerminalStatus(s string) bool { return livestatus.IsTerminal(s) }
 
-// summarize derives one JobSummary, mirroring mcpserver.buildStatus precedence:
-// run file present -> livestatus.Derive(run.Status,...); run file absent ->
-// registry status (terminal surfaced; running -> blind with StartedAt staleness;
-// queued -> queued).
+// summarize derives one JobSummary. Status precedence: a terminal registry
+// status (completed/failed/aborted) is AUTHORITATIVE and wins — a run file or
+// snapshot can be a stale pre-terminal capture (an aborted write job's file still
+// said "running" when pi was killed). Otherwise: run file/snapshot present ->
+// livestatus.Derive(run.Status,...); absent -> registry status (running -> blind
+// with StartedAt staleness; queued -> queued).
 func summarize(rec model.JobRecord, now time.Time) JobSummary {
 	js := JobSummary{
 		JobID: rec.JobID, Mode: string(rec.Mode), CWD: rec.CWD,
@@ -135,7 +157,12 @@ func summarize(rec model.JobRecord, now time.Time) JobSummary {
 
 	run, err := readRun(rec.RunsDir, rec.RunID)
 	if err != nil || run == nil {
-		// No run file. Surface registry status.
+		// On-disk run file gone: fall back to the snapshot persisted at terminal
+		// time (populated only on the on-demand detail read; nil in the list path).
+		run = decodeSnapshot(rec.RunSnapshot)
+	}
+	if run == nil {
+		// No run file and no snapshot. Surface registry status.
 		switch rec.Status {
 		case model.JobQueued:
 			js.Status = "queued"
@@ -161,7 +188,13 @@ func summarize(rec model.JobRecord, now time.Time) JobSummary {
 	if run.CurrentPhase != nil {
 		js.Phase = *run.CurrentPhase
 	}
-	js.Status = livestatus.Derive(run.Status, run.UpdatedAt, now, true, worktreeActive)
+	// Terminal registry status wins over the (possibly stale) run/snapshot status;
+	// otherwise derive from the run file for liveness. See the function doc.
+	if isTerminalStatus(string(rec.Status)) {
+		js.Status = string(rec.Status)
+	} else {
+		js.Status = livestatus.Derive(run.Status, run.UpdatedAt, now, true, worktreeActive)
+	}
 	js.AgentsTotal = len(run.Agents)
 	for i := range run.Agents {
 		if run.Agents[i].Status == "done" {
@@ -189,12 +222,16 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 	d := JobDetail{JobSummary: summarize(rec, now), Agents: []AgentView{}, Intermediate: []model.IntermediateResult{}}
 	run, err := readRun(rec.RunsDir, rec.RunID)
 	if err != nil || run == nil {
+		// On-disk run file gone: render from the snapshot persisted at terminal time.
+		run = decodeSnapshot(rec.RunSnapshot)
+	}
+	if run == nil {
 		if d.BlindWindow {
 			if a, ok := runstore.ReadAuthoring(rec.RunsDir, rec.JobID); ok {
 				d.Authoring = a
 			}
 		}
-		return d, true // blind / no run file: summary (+authoring) only
+		return d, true // blind / no run file / no snapshot: summary (+authoring) only
 	}
 	d.Phases = run.Phases
 	d.Agents = make([]AgentView, 0, len(run.Agents))
@@ -213,24 +250,26 @@ func BuildDetail(rec model.JobRecord, now time.Time) (JobDetail, bool) {
 	d.Intermediate = runstore.Intermediates(run, config.MaxInlineResultBytes)
 	d.TokenUsage = run.TokenUsage
 	if livestatus.IsTerminal(d.Status) && d.Status == "completed" {
-		d.Result = rawToAny(run.Result)
+		d.Result = runstore.RawToAny(run.Result)
 	}
 	return d, true
-}
-
-// rawToAny decodes a json.RawMessage into an any (object/array/scalar); empty or
-// invalid -> nil.
-func rawToAny(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil
-	}
-	return v
 }
 
 // jsonMarshal is a thin wrapper so server.go need not import encoding/json
 // directly for one call.
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+// decodeSnapshot decodes a persisted run snapshot (model.JobRecord.RunSnapshot —
+// the run-file JSON pi-mcp captured at terminal time) into a *model.Run, or nil
+// when absent or invalid. This is what lets the dashboard render a terminal job
+// whose on-disk run file has since been removed (temp cwd cleaned / worktree pruned).
+func decodeSnapshot(b []byte) *model.Run {
+	if len(b) == 0 {
+		return nil
+	}
+	var run model.Run
+	if json.Unmarshal(b, &run) != nil {
+		return nil
+	}
+	return &run
+}

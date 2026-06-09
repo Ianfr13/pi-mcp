@@ -2,9 +2,11 @@ package dashboard
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"pi-mcp/internal/config"
 	"pi-mcp/internal/model"
 	"pi-mcp/internal/runstore"
 )
@@ -29,6 +31,29 @@ func mustTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// TestReadRun_RecoversFromBakWhenPrimaryMissing pins the .bak fallback the
+// dashboard's run-file loader must keep: pi writes a sibling <runId>.json.bak
+// snapshot, and a run whose primary .json is briefly absent (mid-rewrite) or
+// corrupt must still render from the .bak — not collapse to "no run data".
+// Regression guard: runstore.Load short-circuits on os.Stat(.json) and would
+// skip the .bak, so readRun must use runstore.ReadRun.
+func TestReadRun_RecoversFromBakWhenPrimaryMissing(t *testing.T) {
+	dir := t.TempDir()
+	const runID = "r-bak-only"
+	// Only the .bak snapshot exists; the primary .json is absent.
+	bak := filepath.Join(dir, runID+".json.bak")
+	if err := os.WriteFile(bak, []byte(`{"runId":"r-bak-only","status":"completed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run, err := readRun(dir, runID)
+	if err != nil || run == nil {
+		t.Fatalf("readRun must recover from .bak when primary .json is missing; got err=%v run=%v", err, run)
+	}
+	if run.RunID != runID {
+		t.Fatalf("recovered run wrong: %+v", run)
+	}
 }
 
 func findJob(s DashboardState, id string) *JobSummary {
@@ -115,7 +140,7 @@ func TestBuildState_StaleBlindFails(t *testing.T) {
 	// job-blind started long ago, no run file, not worktree-active -> failed.
 	for i := range recs {
 		if recs[i].JobID == "job-blind" {
-			recs[i].StartedAt = nowFresh.Add(-2 * 300 * time.Second)
+			recs[i].StartedAt = nowFresh.Add(-config.StaleThreshold - time.Minute)
 		}
 	}
 	s := BuildState(recs, "/state", nowFresh)

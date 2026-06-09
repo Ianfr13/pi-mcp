@@ -49,10 +49,17 @@ func Load(runsDir, runID string) (*model.Run, error) {
 	return ReadRun(path)
 }
 
+// RunsDir returns the runs directory for a launch cwd: <cwd>/.pi/workflows/runs.
+// Single home for the run-file path layout so mcpserver/app/dashboard never
+// hand-build it (and never drift, e.g. a non-portable string concat).
+func RunsDir(cwd string) string {
+	return filepath.Join(cwd, config.RunsDirRel)
+}
+
 // ListItems is the cwd-relative convenience wrapper over ListRuns: it resolves the
 // runs dir as <cwd>/config.RunsDirRel and returns the rows. (mcpserver.RunStore seam.)
 func ListItems(cwd string, limit int) ([]model.ListItem, error) {
-	out, err := ListRuns(filepath.Join(cwd, config.RunsDirRel), limit)
+	out, err := ListRuns(RunsDir(cwd), limit)
 	if err != nil {
 		return nil, err
 	}

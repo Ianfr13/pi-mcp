@@ -15,15 +15,22 @@ const (
 	// DefaultConcurrencyCap is the max simultaneous pi jobs (configurable).
 	// Justified by provider rate limits, not a token budget (decision #12).
 	DefaultConcurrencyCap = 4
-
-	// DefaultAgentTimeoutMs is the engine's per-agent timeout (~5min). pi-mcp
-	// does NOT impose its own job timeout (cancel-only); this mirrors the engine.
-	DefaultAgentTimeoutMs int64 = 300000
 )
 
-// StaleThreshold: a disk status of "running" with UpdatedAt older than this is
-// treated as crashed (post-restart liveness override). 300s == DefaultAgentTimeoutMs.
-const StaleThreshold = 300 * time.Second
+// ForcedAgentTimeoutMs is the per-agent timeout pi-mcp injects into the forcing
+// prompt (20 min) so coding/TDD agents are not killed by the 5-min default. The
+// forcing-prompt template (ForcingPromptTemplate) hardcodes this literal as
+// "1200000"; keep the two in sync. StaleThreshold MUST exceed this value.
+const ForcedAgentTimeoutMs int64 = 1_200_000
+
+// StaleThreshold: a non-terminal job whose updatedAt is older than this is
+// treated as crashed (liveness override in livestatus.Derive + the dashboard
+// blind-window path + the write-job worktree-activity window). It MUST exceed
+// ForcedAgentTimeoutMs — a single healthy agent can run that long with a quiet
+// run file, and must NOT be reported failed. Genuinely-dead jobs are reaped
+// promptly by the periodic reconcile and the normal job lifecycle, so a generous
+// threshold does not delay real failure detection. 20-min timeout + 10-min margin.
+const StaleThreshold = time.Duration(ForcedAgentTimeoutMs)*time.Millisecond + 10*time.Minute
 
 // MaxAuthoringRetries is how many EXTRA times pi-mcp relaunches pi when a job
 // fails BEFORE any run file is created (the workflow never started — e.g. the
@@ -101,7 +108,9 @@ Run the workflow to completion without throttling: pass tokenBudget:2000000000 (
 unlimited) to the workflow tool and do NOT set per-phase budgets — never stop or throttle the run
 for token or cost reasons. Pass the large value EXPLICITLY; do not rely on omitting it.
 Give agents room to finish: pass agentTimeoutMs:1200000 (20 minutes) to the workflow tool so
-coding/TDD agents are not killed by the 5-minute default per-agent timeout.
+coding/TDD agents are not killed by the 5-minute default per-agent timeout. Do NOT set a
+per-agent timeoutMs on any agent() call — it overrides agentTimeoutMs and re-introduces the
+5-minute kill; rely solely on the single agentTimeoutMs above.
 The workflow MUST return an object matching exactly this JSON shape:
 {{CONTRACT}}
 
@@ -152,7 +161,15 @@ func StateDir() string {
 	return os.TempDir()
 }
 
-// RegistryPath is the SQLite job-registry DB: <StateDir>/pi-mcp/registry.db.
+// RegistryPathFor returns the SQLite registry DB path under an explicit state
+// dir: <stateDir>/pi-mcp/registry.db. Any caller honoring a custom --state-dir
+// MUST use this — never hand-build "registry.json" (the canonical registry is
+// the .db; a .json path yields an empty/split-brain reader).
+func RegistryPathFor(stateDir string) string {
+	return filepath.Join(stateDir, "pi-mcp", "registry.db")
+}
+
+// RegistryPath is the SQLite job-registry DB under the default state dir.
 func RegistryPath() string {
-	return filepath.Join(StateDir(), "pi-mcp", "registry.db")
+	return RegistryPathFor(StateDir())
 }

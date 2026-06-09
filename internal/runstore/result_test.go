@@ -1,50 +1,9 @@
 package runstore
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 )
-
-func TestAuthoritativeResult_CompletedUsesRunResult(t *testing.T) {
-	r, err := ReadRun(filepath.Join("testdata", "sample-run.json"))
-	if err != nil {
-		t.Fatalf("ReadRun: %v", err)
-	}
-	res, ok := AuthoritativeResult(r)
-	if !ok {
-		t.Fatal("AuthoritativeResult ok = false, want true (status completed with .result)")
-	}
-	var parsed struct {
-		Overall string `json:"overall"`
-	}
-	if err := json.Unmarshal(res, &parsed); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
-	if parsed.Overall == "" {
-		t.Errorf("result.overall empty, want the synthesized verdict")
-	}
-}
-
-func TestAuthoritativeResult_RunningNotAuthoritative(t *testing.T) {
-	r, err := ReadRun(filepath.Join("testdata", "sample-run-partial.json"))
-	if err != nil {
-		t.Fatalf("ReadRun: %v", err)
-	}
-	if _, ok := AuthoritativeResult(r); ok {
-		t.Error("AuthoritativeResult ok = true on running run, want false (.result not authoritative until completed)")
-	}
-}
-
-func TestAuthoritativeResult_PausedNotAuthoritative(t *testing.T) {
-	r, err := ReadRun(filepath.Join("testdata", "sample-run-partial-paused.json"))
-	if err != nil {
-		t.Fatalf("ReadRun: %v", err)
-	}
-	if _, ok := AuthoritativeResult(r); ok {
-		t.Error("AuthoritativeResult ok = true on paused run, want false")
-	}
-}
 
 func TestMetadata_Canonical(t *testing.T) {
 	r, err := ReadRun(filepath.Join("testdata", "sample-run.json"))

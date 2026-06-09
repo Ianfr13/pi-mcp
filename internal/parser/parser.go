@@ -1,7 +1,8 @@
 // Package parser parses the pi -p --mode json stdout stream (line-delimited
 // JSON). It scans line-by-line, switches on the event .type, ignores unknown
 // types and malformed lines, captures the first session event id, and detects
-// the workflow tool_execution_end event to extract the final workflow result.
+// the workflow tool_execution_end event (surfacing whether it ran and any error
+// text; runstore owns the authoritative result read from the run file).
 //
 // The parser deliberately does NOT import internal/model: it owns a minimal
 // private line-decode envelope (spec §6/§7). It returns its own small Result
@@ -29,10 +30,6 @@ type Result struct {
 	IsError bool
 	// RawText is content[0].text of the workflow tool_execution_end (empty if none).
 	RawText string
-	// Result is the extracted workflow result: the fenced ```json``` block parsed
-	// from RawText, or the raw text JSON-string-wrapped when no/!invalid fenced
-	// block. It is nil when no workflow event was seen.
-	Result json.RawMessage
 }
 
 // streamEvent is the minimal envelope decoded per JSONL line. Extra fields on the
@@ -92,7 +89,6 @@ func ParseStream(ctx context.Context, r io.Reader) (Result, error) {
 						if ev.Result != nil && len(ev.Result.Content) > 0 {
 							res.RawText = ev.Result.Content[0].Text
 						}
-						res.Result = extractWorkflowResult(res.RawText)
 					}
 				default:
 					// Unknown / uninteresting type: ignore.
