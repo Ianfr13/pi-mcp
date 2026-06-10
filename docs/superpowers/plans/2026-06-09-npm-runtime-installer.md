@@ -136,7 +136,7 @@ Create `installer/npm/src/constants.js`:
 ```js
 export const PI_CORE_PACKAGE = '@earendil-works/pi-coding-agent';
 export const WORKFLOW_REPO = 'https://github.com/Ianfr13/pi-dynamic-workflows-custom.git';
-export const WORKFLOW_REF = '953ecbbc71646bda36f326ad5b5aed9457c9b812';
+export const WORKFLOW_REF = 'cd87fbe435cd133f647b9e2189a685d0eb61d92c';
 export const PI_MCP_REPO = 'https://github.com/Ianfr13/pi-mcp.git';
 export const WORKFLOW_DIR_NAME = 'pi-dynamic-workflows-custom';
 export const PI_MCP_DIR_NAME = 'pi-mcp';

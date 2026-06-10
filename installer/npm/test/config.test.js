@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeSettings, modelTiersConfig } from '../src/lib/config.js';
-import { DEFAULT_MODEL_TIERS } from '../src/constants.js';
+import { DEFAULT_MODEL_TIERS, WORKFLOW_REF } from '../src/constants.js';
 
 const workflowPath = '/home/user/.pi-mcp/runtime/pi-dynamic-workflows-custom';
+const expectedWorkflowRef = 'cd87fbe435cd133f647b9e2189a685d0eb61d92c';
 
 test('mergeSettings preserves unrelated fields and appends workflow path once', () => {
   const existing = {
@@ -37,4 +38,8 @@ test('modelTiersConfig returns exact Ian routing profile clone', () => {
   const one = modelTiersConfig();
   one.tiers.small = 'changed';
   assert.equal(modelTiersConfig().tiers.small, 'deepseek/deepseek-v4-flash');
+});
+
+test('installer pins the current team workflow custom commit', () => {
+  assert.equal(WORKFLOW_REF, expectedWorkflowRef);
 });
