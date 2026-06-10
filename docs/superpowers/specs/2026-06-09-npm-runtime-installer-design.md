@@ -42,7 +42,7 @@ The command should:
    ```
 3. Clone or update the custom workflow fork:
    - Source: `https://github.com/Ianfr13/pi-dynamic-workflows-custom.git`
-   - Default ref: current known-good ref from Ian's environment, `cd87fbe435cd133f647b9e2189a685d0eb61d92c`, unless overridden.
+   - Default ref: current known-good ref from Ian's environment, `13162e0a3112c68f819cc92c35547f660e7afd12`, unless overridden.
    - Destination: `~/.pi-mcp/runtime/pi-dynamic-workflows-custom` by default.
 4. Install/build the workflow fork:
    ```bash
@@ -233,4 +233,4 @@ npx ./ianfr13-pi-mcp-runtime-*.tgz install --dry-run
 ## Implementation decisions
 
 - `pi-mcp` source defaults to `https://github.com/Ianfr13/pi-mcp.git`, cloned under the runtime directory and built from there. For local development, `--pi-mcp-source <dir>` can point at the current checkout instead.
-- The workflow fork defaults to the known-good commit `cd87fbe435cd133f647b9e2189a685d0eb61d92c`. A future release can change the default to a named tag, but the first team rollout should prioritize exact replication of Ian's current environment.
+- The workflow fork defaults to the known-good commit `13162e0a3112c68f819cc92c35547f660e7afd12`. A future release can change the default to a named tag, but the first team rollout should prioritize exact replication of Ian's current environment.

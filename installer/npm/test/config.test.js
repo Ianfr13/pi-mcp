@@ -4,7 +4,7 @@ import { mergeSettings, modelTiersConfig } from '../src/lib/config.js';
 import { DEFAULT_MODEL_TIERS, WORKFLOW_REF } from '../src/constants.js';
 
 const workflowPath = '/home/user/.pi-mcp/runtime/pi-dynamic-workflows-custom';
-const expectedWorkflowRef = 'cd87fbe435cd133f647b9e2189a685d0eb61d92c';
+const expectedWorkflowRef = '13162e0a3112c68f819cc92c35547f660e7afd12';
 
 test('mergeSettings preserves unrelated fields and appends workflow path once', () => {
   const existing = {
