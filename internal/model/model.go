@@ -165,7 +165,14 @@ type StatusInput struct {
 	JobID string `json:"jobId,omitempty" jsonschema:"job id from pi_workflow"`
 	RunID string `json:"runId,omitempty" jsonschema:"alternative: external/post-restart run id (requires cwd)"`
 	CWD   string `json:"cwd,omitempty" jsonschema:"required when querying by runId; resolves the runs dir"`
-	Wait  bool   `json:"wait,omitempty" jsonschema:"long-poll until a terminal/new-agent/new-phase change (cap 60s)"`
+	Wait  bool   `json:"wait,omitempty" jsonschema:"long-poll until a terminal/new-agent/new-phase/inactivity change (cap 5min, env PI_MCP_WAIT_CAP)"`
+	// FromStart resets the server-side delta position: re-deliver every event
+	// from journal position 0. There is NO client-managed cursor — the server
+	// tracks delivery per jobId (stdio server == one process per session).
+	FromStart bool `json:"from_start,omitempty" jsonschema:"re-deliver all events from the beginning (resets the server-side delta position)"`
+	// IncludeResults attaches each NEW event's full result (16KB truncation)
+	// to this response. Default events carry label/model/phase/status only.
+	IncludeResults bool `json:"include_results,omitempty" jsonschema:"attach the full result of each NEW event in this response (truncated at 16KB); default is label+status only"`
 }
 
 // IntermediateResult is one completed agent surfaced live (join index==callIndex).
@@ -173,6 +180,10 @@ type StatusInput struct {
 // json.RawMessage as schema type "null|array" and VALIDATES outgoing tool
 // output, which rejects a JSON object. `any` reflects to an unconstrained schema
 // so arbitrary workflow-defined JSON (object/array/scalar) passes validation.
+//
+// DEPRECATED on StatusOutput (replaced by Events[] in delta protocol, removed in
+// Task 4). Still used by dashboard's JobDetail.Intermediate — that usage is
+// UNCHANGED.
 type IntermediateResult struct {
 	Label     string `json:"label"`
 	Model     string `json:"model"`
@@ -180,6 +191,21 @@ type IntermediateResult struct {
 	Result    any    `json:"result,omitempty" jsonschema:"the agent's full result as arbitrary JSON (object, array, or scalar); preview field is used instead when truncated"` // full journal result; or preview if truncated
 	Preview   string `json:"resultPreview,omitempty"`                                                                                                                          // present when Truncated
 	Truncated bool   `json:"truncated"`
+}
+
+// StatusEvent is one delta row: an agent whose journal entry landed since the
+// caller's previous pi_status call. Result/Preview are attached only when
+// include_results=true (Result is `any`, not json.RawMessage, for the same
+// go-sdk output-schema reason as IntermediateResult.Result).
+type StatusEvent struct {
+	Label     string `json:"label"`
+	Model     string `json:"model"`
+	Phase     string `json:"phase"`
+	Status    string `json:"status"` // ok|error
+	Error     string `json:"error,omitempty"`
+	Result    any    `json:"result,omitempty" jsonschema:"full agent result as arbitrary JSON; only when include_results=true"`
+	Preview   string `json:"resultPreview,omitempty"` // set instead of Result when truncated
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // StatusMetadata mirrors §5.2 metadata; cost/tokens only at end.
@@ -211,17 +237,26 @@ type WriteInfo struct {
 
 type StatusOutput struct {
 	JobID        string               `json:"jobId"`
-	RunID        *string              `json:"runId"`                                                                                                                               // null during blind window
-	Status       string               `json:"status"`                                                                                                                              // queued|running|completed|failed|aborted (mapped)
-	Phase        *string              `json:"phase"`                                                                                                                               // == run.currentPhase; null if unknown
-	BlindWindow  bool                 `json:"blind_window"`                                                                                                                        // true while run file does not yet exist
-	Intermediate []IntermediateResult `json:"intermediate"`                                                                                                                        // grows each poll
-	Result       any                  `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"` // any + jsonschema tag => object schema ({description}) that accepts any JSON and validates in strict MCP clients (Claude Code)
-	Metadata     *StatusMetadata      `json:"metadata,omitempty"`
-	Write        *WriteInfo           `json:"write,omitempty"`     // iff write
-	Progress     *Progress            `json:"progress,omitempty"`  // heartbeat for non-terminal jobs (elapsed + worktree activity)
-	Authoring    *AuthoringInfo       `json:"authoring,omitempty"` // live authoring preview, populated in the blind window
-	Error        string               `json:"error,omitempty"`     // failed/aborted message
+	RunID        *string              `json:"runId"`                                                                                                                                       // null during blind window
+	Status       string               `json:"status"`                                                                                                                                      // queued|running|stalled|completed|failed|aborted (mapped)
+	Phase        *string              `json:"phase"`                                                                                                                                       // == run.currentPhase; null if unknown
+	BlindWindow  bool                 `json:"blind_window"`                                                                                                                                // true while run file does not yet exist
+	// Events is the DELTA: agents finished since the previous pi_status call
+	// for this job (server-side tracking; see StatusInput.FromStart). Replaces
+	// the always-full intermediate[] list, which re-injected every result
+	// into the caller's context on every poll.
+	Events []StatusEvent `json:"events"`
+	// AgentsDone is the count of agents that have a journal entry (errored
+	// agents count as done). AgentsTotal is len(run.agents). Both 0 in the
+	// blind window (no run file yet).
+	AgentsDone  int                  `json:"agentsDone"`
+	AgentsTotal int                  `json:"agentsTotal"`
+	Result       any             `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"`
+	Metadata    *StatusMetadata `json:"metadata,omitempty"`
+	Write       *WriteInfo      `json:"write,omitempty"`
+	Progress    *Progress       `json:"progress,omitempty"`
+	Authoring   *AuthoringInfo  `json:"authoring,omitempty"`
+	Error       string          `json:"error,omitempty"`
 }
 
 // --- pi_list (§5.3) ---

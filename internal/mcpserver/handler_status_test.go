@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -88,8 +89,11 @@ func TestStatus_BlindWindow(t *testing.T) {
 	if out.RunID != nil {
 		t.Fatalf("runId must be null in blind window, got %v", *out.RunID)
 	}
-	if len(out.Intermediate) != 0 {
-		t.Fatalf("no intermediate in blind window")
+	if len(out.Events) != 0 {
+		t.Fatalf("no events in blind window")
+	}
+	if out.Events == nil {
+		t.Fatalf("events must be [] on every path, never null")
 	}
 }
 
@@ -132,7 +136,7 @@ func TestStatus_RunIdPathNonexistentRun_IsQueuedNotError(t *testing.T) {
 	}
 }
 
-func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
+func TestStatus_CompletedReadResultAndEvents(t *testing.T) {
 	run := buildRun() // completed, journal 0,2,1,3
 	j := newFakeJobs()
 	j.lookup["job-2"] = model.JobRecord{JobID: "job-2", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeRead, PID: 1, Status: model.JobRunning}
@@ -153,8 +157,8 @@ func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
 	if out.Phase == nil || *out.Phase != "Final" {
 		t.Fatalf("phase wrong: %v", out.Phase)
 	}
-	if len(out.Intermediate) != 4 || out.Intermediate[1].Label != "claim C" {
-		t.Fatalf("intermediate join wrong: %+v", out.Intermediate)
+	if len(out.Events) != 4 || out.Events[1].Label != "claim C" {
+		t.Fatalf("events join wrong: %+v", out.Events)
 	}
 	if out.Metadata == nil || out.Metadata.ByModel["deepseek/deepseek-v4-flash"] != 3 {
 		t.Fatalf("metadata histogram wrong")
@@ -176,7 +180,10 @@ func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
 	}
 }
 
-func TestStatus_StaleRunningBecomesFailed(t *testing.T) {
+func TestStatus_StaleRunningBecomesStalled(t *testing.T) {
+	// A non-terminal run with a stale updatedAt and a live (or unknown) pid is
+	// STALLED (NON-terminal: may resume), NOT failed. Confirmed-dead pid is the
+	// only path that still flips to failed.
 	run := buildRun()
 	run.Status = "running"
 	old := mustTime("2020-01-01T00:00:00Z")
@@ -191,8 +198,13 @@ func TestStatus_StaleRunningBecomesFailed(t *testing.T) {
 	srv.now = func() time.Time { return mustTime("2026-06-07T00:00:00Z") }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-3"})
-	if out.Status != "failed" {
-		t.Fatalf("stale running must map to failed, got %q", out.Status)
+	if out.Status != "stalled" {
+		t.Fatalf("stale running must map to stalled (NON-terminal), got %q", out.Status)
+	}
+	// stalled is informational: no Error surfaced (regression guard for
+	// buildStatus's `out.Status == "failed" || "aborted"` arm).
+	if out.Error != "" {
+		t.Fatalf("stalled must NOT carry an error, got %q", out.Error)
 	}
 }
 
@@ -327,9 +339,9 @@ func TestStatus_WaitWakesOnJournalGrowth(t *testing.T) {
 	if out.Status != "running" {
 		t.Fatalf("want running, got %q", out.Status)
 	}
-	// after wake, buildStatus loads again (seq sticks to last) -> 2 intermediate
-	if len(out.Intermediate) != 2 {
-		t.Fatalf("want 2 intermediate after wake, got %d", len(out.Intermediate))
+	// after wake, buildStatus loads again (seq sticks to last) -> 2 events
+	if len(out.Events) != 2 {
+		t.Fatalf("want 2 events after wake, got %d", len(out.Events))
 	}
 }
 
@@ -563,14 +575,18 @@ func TestStatus_WriteFarFutureMtimeDoesNotMaskWedge(t *testing.T) {
 	srv.now = func() time.Time { return now }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ff"})
-	if out.Status != "failed" {
-		t.Fatalf("far-future mtime must not mask a wedged job, got %q", out.Status)
+	// Far-future mtime is NOT plausible clock skew and must not be trusted as
+	// liveness. With a stale run file + non-active worktree, the job is stalled
+	// (NON-terminal), not failed — pid is alive or unknown.
+	if out.Status != "stalled" {
+		t.Fatalf("far-future mtime must not mask a wedged job -> stalled, got %q", out.Status)
 	}
 }
 
-func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
+func TestStatus_WriteStaleWorktreeStillStalls(t *testing.T) {
 	// A write job whose run file is stale AND whose worktree is NOT changing is
-	// genuinely wedged/dead -> staleness still applies (no false liveness).
+	// quiet — pid is still considered alive (or unknown) so this is "stalled"
+	// (NON-terminal), not "failed". confirmed-dead pid is the only failure path.
 	now := mustTime("2026-06-08T12:00:00Z")
 	staleUpd := now.Add(-(config.StaleThreshold + time.Minute))
 
@@ -593,8 +609,8 @@ func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
 	srv.now = func() time.Time { return now }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ws"})
-	if out.Status != "failed" {
-		t.Fatalf("stale run file + inactive worktree must fail, got %q", out.Status)
+	if out.Status != "stalled" {
+		t.Fatalf("stale run file + inactive worktree must stall (NON-terminal), got %q", out.Status)
 	}
 }
 
@@ -651,5 +667,194 @@ func TestStatus_WriteRunningDoesNotStage(t *testing.T) {
 	}
 	if out.Write.DiffStat != "" || len(out.Write.FilesChanged) != 0 {
 		t.Fatalf("running write job must NOT be staged/diffed: %+v", out.Write)
+	}
+}
+
+// --- Phase 1 / Task 4: delta events across calls ---
+
+func TestStatus_EventsAreDeltaAcrossCalls(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+
+	run := buildRun() // fixture: agents + journal populated, status completed
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+	store.runs["/runs/r1"] = run
+
+	_, out1, err := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if err != nil {
+		t.Fatalf("status 1: %v", err)
+	}
+	if len(out1.Events) != len(run.Journal) {
+		t.Fatalf("first call delivers all %d events, got %d", len(run.Journal), len(out1.Events))
+	}
+	if out1.AgentsTotal != len(run.Agents) {
+		t.Fatalf("agentsTotal: want %d got %d", len(run.Agents), out1.AgentsTotal)
+	}
+	if out1.Events[0].Result != nil {
+		t.Fatalf("minimal mode: no result bodies in events")
+	}
+	if out1.Events == nil {
+		t.Fatalf("events must be [] on every path, never null")
+	}
+
+	_, out2, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if len(out2.Events) != 0 {
+		t.Fatalf("second call with no new journal entries delivers nothing, got %d", len(out2.Events))
+	}
+
+	_, out3, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", FromStart: true})
+	if len(out3.Events) != len(run.Journal) {
+		t.Fatalf("from_start re-delivers all, got %d", len(out3.Events))
+	}
+
+	_, out4, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", FromStart: true, IncludeResults: true})
+	if len(out4.Events) == 0 || (out4.Events[0].Result == nil && !out4.Events[0].Truncated) {
+		t.Fatalf("include_results attaches bodies: %+v", out4.Events)
+	}
+}
+
+// --- Phase 1 / Task 6: early-inactivity warning + stalled-transition wake ---
+
+// waitClock returns a fixed-time clock so the wait's deadline check never
+// fires; the only paths to wake the wait are the warning / stalled transition.
+func waitClock(start time.Time) func() time.Time {
+	return func() time.Time { return start }
+}
+
+func TestWait_EarlyInactivityWarningWakesOnce(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Millisecond
+	s.waitCap = time.Hour // never the cap: the warning must end the wait
+
+	start := mustTime("2026-06-11T10:00:00Z")
+	stale := start.Add(-(config.EarlyInactivityWarn + time.Minute))
+	run := buildRun()
+	run.Status = "running"
+	run.UpdatedAt = &stale
+	store.runs["/runs/r1"] = run
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: stale}
+	jobs.lookup["j1"] = rec
+
+	s.now = waitClock(start)
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	select {
+	case <-done: // woke on the warning, not the 1h cap
+	case <-time.After(5 * time.Second):
+		t.Fatalf("inactivity warning did not wake the wait")
+	}
+
+	// Same epoch again: must NOT wake early — it runs to the (now short) cap.
+	// Status is "stalled" (run file is stale, not a warning artifact), but the
+	// wake cause is the cap, not a re-warning: the tracker was armed on the
+	// first call and the activity epoch did not advance.
+	s.waitCap = 50 * time.Millisecond
+	s.now = time.Now // real clock so the cap is a real-time deadline
+	startCap := time.Now()
+	_, out, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+	elapsed := time.Since(startCap)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("second wait must run to the cap (50ms), took %v", elapsed)
+	}
+	if out.Status != "stalled" {
+		t.Fatalf("stale run file is stalled, got %q", out.Status)
+	}
+}
+
+// --- Phase 1 / Task 7: transient parse-error grace ---
+
+func TestStatus_TransientParseErrorRetriesBeforeFailing(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.sleep = func(time.Duration) {} // no real waiting in tests
+
+	run := buildRun()
+	run.Status = "running"
+	decodeErr := errors.New("unexpected end of JSON input") // NOT ErrRunNotFound
+	store.seq = []*model.Run{nil, run}                      // 1st Load: error, 2nd: good
+	store.seqErrs = []error{decodeErr, nil}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+
+	_, out, err := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	if out.Status == "failed" || out.Error == config.ErrPersistenceError {
+		t.Fatalf("transient decode error must not surface failed: %+v", out)
+	}
+}
+
+func TestStatus_PersistentParseErrorStillFails(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.sleep = func(time.Duration) {}
+
+	decodeErr := errors.New("unexpected end of JSON input")
+	store.seq = []*model.Run{nil, nil, nil, nil, nil}
+	store.seqErrs = []error{decodeErr, decodeErr, decodeErr, decodeErr, decodeErr}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+
+	_, out, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if out.Status != "failed" || out.Error != config.ErrPersistenceError {
+		t.Fatalf("persistent decode error still fails: %+v", out)
+	}
+}
+
+func TestWait_StalledTransitionWakes(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Millisecond
+	s.waitCap = time.Hour
+
+	start := mustTime("2026-06-11T10:00:00Z")
+	fresh := start.Add(-time.Minute)
+	overStale := start.Add(-(config.StaleThreshold + time.Minute))
+
+	runFresh := buildRun()
+	runFresh.Status = "running"
+	runFresh.UpdatedAt = &fresh
+	runStale := buildRun()
+	runStale.Status = "running"
+	runStale.UpdatedAt = &overStale
+	// seq: first Load sees fresh (base), later Loads see the stale snapshot.
+	store.seq = []*model.Run{runFresh, runStale}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: overStale}
+	jobs.lookup["j1"] = rec
+
+	s.now = waitClock(start)
+	done := make(chan struct{})
+	var out model.StatusOutput
+	go func() {
+		_, out, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("stalled transition did not wake the wait")
+	}
+	if out.Status != "stalled" {
+		t.Fatalf("want stalled after wake, got %q", out.Status)
 	}
 }
