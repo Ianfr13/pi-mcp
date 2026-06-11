@@ -55,8 +55,9 @@ func TestE2ESmoke(t *testing.T) {
 	workDir := t.TempDir()
 	t.Logf("pi work dir (cwd): %s", workDir)
 
-	// Overall budget for the whole flow.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Overall budget for the whole flow. Must comfortably exceed the server's
+	// wait cap (set below) times the expected number of quiet long-polls.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	// 3. Connect an MCP client over stdio via CommandTransport. The command
@@ -64,6 +65,10 @@ func TestE2ESmoke(t *testing.T) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "pi-mcp-e2e", Version: "0.0.0"}, nil)
 	cmd := exec.Command(bin)
 	cmd.Stderr = os.Stderr // surface server-side logs into the test output
+	// Bound each long-poll well under the test's overall ctx budget: the prod
+	// default is 5min (PI_MCP_WAIT_CAP overridable by design — this is that
+	// knob doing its job in a client with a tighter deadline).
+	cmd.Env = append(os.Environ(), "PI_MCP_WAIT_CAP=60s")
 	transport := &mcp.CommandTransport{Command: cmd}
 
 	session, err := client.Connect(ctx, transport, nil)

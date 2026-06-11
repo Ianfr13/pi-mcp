@@ -354,6 +354,7 @@ func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 	var base snapshot
 	haveBase := false
 	baseStalled := false
+	sawBlind := false // the wait STARTED before the run file existed
 
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
@@ -361,12 +362,20 @@ func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 	for {
 		now := s.now()
 		run, err := s.store.Load(tgt.runsDir, tgt.runID)
+		if err != nil {
+			sawBlind = true
+		}
 		if err == nil {
 			cur := snapshotOf(run)
 			_, wtLast, wtOK := s.worktreeLast(tgt)
 			worktreeActive := wtOK && now.Sub(wtLast).Abs() <= config.StaleThreshold
 			stalledNow := liveStatus(run.Status, run.UpdatedAt, now, s.pidIsAlive(tgt), worktreeActive) == "stalled"
 			if !haveBase {
+				if sawBlind {
+					// The run file APPEARED during this wait: the blind window
+					// ending is itself the change the caller is waiting for.
+					return
+				}
 				base, haveBase = cur, true
 				baseStalled = stalledNow
 				if cur.terminal {

@@ -858,3 +858,37 @@ func TestWait_StalledTransitionWakes(t *testing.T) {
 		t.Fatalf("want stalled after wake, got %q", out.Status)
 	}
 }
+// TestWait_WakesWhenRunFileAppears: a wait that starts in the blind window
+// (no run file yet) must return when the run file APPEARS — the blind window
+// ending IS a change. Regression: with the 5min WaitCap, silently absorbing
+// the appearance into the base snapshot held the e2e's first wait for the
+// whole cap and blew the client's context deadline.
+func TestWait_WakesWhenRunFileAppears(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Millisecond
+	s.waitCap = time.Hour // only the appearance wake may end this wait
+	s.sleep = func(time.Duration) {}
+
+	run := buildRun()
+	run.Status = "running"
+	// 1st Load: blind window (ErrRunNotFound via nil); later Loads: file landed.
+	store.seq = []*model.Run{nil, run}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+
+	s.now = time.Now
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("run-file appearance did not wake the wait (cap is 1h)")
+	}
+}
