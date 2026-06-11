@@ -251,7 +251,6 @@ type StatusOutput struct {
 	// blind window (no run file yet).
 	AgentsDone  int                  `json:"agentsDone"`
 	AgentsTotal int                  `json:"agentsTotal"`
-	Intermediate []IntermediateResult `json:"intermediate"` // DEPRECATED: removed in Task 4 (delta replaces it)
 	Result       any             `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"`
 	Metadata    *StatusMetadata `json:"metadata,omitempty"`
 	Write       *WriteInfo      `json:"write,omitempty"`

@@ -14,6 +14,7 @@ type Server struct {
 	now          func() time.Time // injectable clock (tests)
 	waitCap      time.Duration    // long-poll cap
 	pollInterval time.Duration    // long-poll tick
+	delta        *deltaTracker    // per-job delivery + early-warning state (delta protocol)
 
 	// pidAlive reports whether the job's process is alive (same session). Injected so
 	// tests can simulate dead processes; defaults to "assume alive" when nil.
@@ -28,6 +29,7 @@ func New(js JobsService, store RunStore) *Server {
 		now:          time.Now,
 		waitCap:      defaultWaitCap,
 		pollInterval: defaultPollInterval,
+		delta:        newDeltaTracker(),
 		pidAlive:     func(int) bool { return true },
 	}
 }

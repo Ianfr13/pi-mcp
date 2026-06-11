@@ -117,17 +117,20 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 		return nil, model.StatusOutput{}, err
 	}
 
-	if in.Wait {
+	// from_start is a replay request: deliver immediately, never wait first.
+	if in.Wait && !in.FromStart {
 		s.waitForChange(ctx, tgt)
 	}
 
-	out := s.buildStatus(tgt)
+	out := s.buildStatus(tgt, in)
 	return nil, out, nil
 }
 
 // buildStatus loads the run file once and assembles StatusOutput (no waiting).
-func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
-	out := model.StatusOutput{JobID: tgt.jobID}
+// Events is initialized to an empty (non-nil) slice on EVERY path so the wire
+// output serializes as [] and never as null (review finding #5).
+func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOutput {
+	out := model.StatusOutput{JobID: tgt.jobID, Events: []model.StatusEvent{}}
 
 	now := s.now() // capture once so the skew math and heartbeat agree
 
@@ -193,7 +196,24 @@ func (s *Server) buildStatus(tgt resolved) model.StatusOutput {
 
 	diskStatus := mapDiskStatus(run.Status)
 	out.Status = liveStatus(run.Status, run.UpdatedAt, now, s.pidIsAlive(tgt), worktreeActive)
-	out.Intermediate = runstore.Intermediates(run, config.MaxInlineResultBytes)
+	// Delta events: only journal positions not yet delivered to this session.
+	// take() advances even when the caller is about to see a terminal status —
+	// the final result arrives via out.Result, not via re-played events.
+	from := s.delta.take(deltaKey(tgt), len(run.Journal), in.FromStart)
+	out.Events = runstore.EventsSince(run, from, in.IncludeResults, config.MaxInlineResultBytes)
+	// agentsDone = agents WITH A JOURNAL ENTRY (spec wording; errored agents
+	// have one too). NOT agent.Status counting — a done-status agent whose
+	// journal entry has not landed yet is not "done" for delta purposes.
+	out.AgentsTotal = len(run.Agents)
+	byCall := make(map[int]bool, len(run.Agents))
+	for i := range run.Agents {
+		byCall[run.Agents[i].CallIndex] = true
+	}
+	for i := range run.Journal {
+		if byCall[run.Journal[i].Index] {
+			out.AgentsDone++
+		}
+	}
 	md := runstore.Metadata(run)
 	out.Metadata = &md
 

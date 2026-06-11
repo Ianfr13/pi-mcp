@@ -89,16 +89,37 @@ func TestStatusOutputPassesGoSDKSchemaValidation(t *testing.T) {
 		t.Fatalf("final result missing coerced summary: %#v", resObj)
 	}
 
-	if len(out.Intermediate) != 4 {
-		t.Fatalf("want 4 intermediate, got %d", len(out.Intermediate))
+	if len(out.Events) != 4 {
+		t.Fatalf("want 4 events, got %d", len(out.Events))
 	}
-	first := out.Intermediate[0]
-	irObj, ok := first.Result.(map[string]any)
+	first := out.Events[0]
+	if first.Result != nil {
+		t.Fatalf("events default to no result body; got %#v", first.Result)
+	}
+	// A separate from_start + include_results call must surface the journal object.
+	irRes, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "pi_status",
+		Arguments: map[string]any{"jobId": "job-obj", "from_start": true, "include_results": true},
+	})
+	if err != nil {
+		t.Fatalf("include_results CallTool: %v", err)
+	}
+	if irRes.IsError {
+		t.Fatalf("include_results IsError: %s", contentTextOf(irRes))
+	}
+	var irOut model.StatusOutput
+	if err := decodeToolResult(irRes, &irOut); err != nil {
+		t.Fatalf("decode include_results StatusOutput: %v", err)
+	}
+	if len(irOut.Events) == 0 {
+		t.Fatalf("from_start+include_results must surface events")
+	}
+	evObj, ok := irOut.Events[0].Result.(map[string]any)
 	if !ok {
-		t.Fatalf("intermediate[0].result is not a JSON object: %#v", first.Result)
+		t.Fatalf("events[0].result (include_results=true) is not a JSON object: %#v", irOut.Events[0].Result)
 	}
-	if irObj["claim"] == nil {
-		t.Fatalf("intermediate[0].result lost object content: %#v", irObj)
+	if evObj["claim"] == nil {
+		t.Fatalf("events[0].result lost object content: %#v", evObj)
 	}
 }
 

@@ -88,8 +88,11 @@ func TestStatus_BlindWindow(t *testing.T) {
 	if out.RunID != nil {
 		t.Fatalf("runId must be null in blind window, got %v", *out.RunID)
 	}
-	if len(out.Intermediate) != 0 {
-		t.Fatalf("no intermediate in blind window")
+	if len(out.Events) != 0 {
+		t.Fatalf("no events in blind window")
+	}
+	if out.Events == nil {
+		t.Fatalf("events must be [] on every path, never null")
 	}
 }
 
@@ -132,7 +135,7 @@ func TestStatus_RunIdPathNonexistentRun_IsQueuedNotError(t *testing.T) {
 	}
 }
 
-func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
+func TestStatus_CompletedReadResultAndEvents(t *testing.T) {
 	run := buildRun() // completed, journal 0,2,1,3
 	j := newFakeJobs()
 	j.lookup["job-2"] = model.JobRecord{JobID: "job-2", RunsDir: "/runs", RunID: run.RunID, Mode: model.ModeRead, PID: 1, Status: model.JobRunning}
@@ -153,8 +156,8 @@ func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
 	if out.Phase == nil || *out.Phase != "Final" {
 		t.Fatalf("phase wrong: %v", out.Phase)
 	}
-	if len(out.Intermediate) != 4 || out.Intermediate[1].Label != "claim C" {
-		t.Fatalf("intermediate join wrong: %+v", out.Intermediate)
+	if len(out.Events) != 4 || out.Events[1].Label != "claim C" {
+		t.Fatalf("events join wrong: %+v", out.Events)
 	}
 	if out.Metadata == nil || out.Metadata.ByModel["deepseek/deepseek-v4-flash"] != 3 {
 		t.Fatalf("metadata histogram wrong")
@@ -335,9 +338,9 @@ func TestStatus_WaitWakesOnJournalGrowth(t *testing.T) {
 	if out.Status != "running" {
 		t.Fatalf("want running, got %q", out.Status)
 	}
-	// after wake, buildStatus loads again (seq sticks to last) -> 2 intermediate
-	if len(out.Intermediate) != 2 {
-		t.Fatalf("want 2 intermediate after wake, got %d", len(out.Intermediate))
+	// after wake, buildStatus loads again (seq sticks to last) -> 2 events
+	if len(out.Events) != 2 {
+		t.Fatalf("want 2 events after wake, got %d", len(out.Events))
 	}
 }
 
@@ -663,5 +666,51 @@ func TestStatus_WriteRunningDoesNotStage(t *testing.T) {
 	}
 	if out.Write.DiffStat != "" || len(out.Write.FilesChanged) != 0 {
 		t.Fatalf("running write job must NOT be staged/diffed: %+v", out.Write)
+	}
+}
+
+// --- Phase 1 / Task 4: delta events across calls ---
+
+func TestStatus_EventsAreDeltaAcrossCalls(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+
+	run := buildRun() // fixture: agents + journal populated, status completed
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+	store.runs["/runs/r1"] = run
+
+	_, out1, err := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if err != nil {
+		t.Fatalf("status 1: %v", err)
+	}
+	if len(out1.Events) != len(run.Journal) {
+		t.Fatalf("first call delivers all %d events, got %d", len(run.Journal), len(out1.Events))
+	}
+	if out1.AgentsTotal != len(run.Agents) {
+		t.Fatalf("agentsTotal: want %d got %d", len(run.Agents), out1.AgentsTotal)
+	}
+	if out1.Events[0].Result != nil {
+		t.Fatalf("minimal mode: no result bodies in events")
+	}
+	if out1.Events == nil {
+		t.Fatalf("events must be [] on every path, never null")
+	}
+
+	_, out2, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if len(out2.Events) != 0 {
+		t.Fatalf("second call with no new journal entries delivers nothing, got %d", len(out2.Events))
+	}
+
+	_, out3, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", FromStart: true})
+	if len(out3.Events) != len(run.Journal) {
+		t.Fatalf("from_start re-delivers all, got %d", len(out3.Events))
+	}
+
+	_, out4, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", FromStart: true, IncludeResults: true})
+	if len(out4.Events) == 0 || (out4.Events[0].Result == nil && !out4.Events[0].Truncated) {
+		t.Fatalf("include_results attaches bodies: %+v", out4.Events)
 	}
 }

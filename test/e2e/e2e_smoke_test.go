@@ -155,7 +155,7 @@ func TestE2ESmoke(t *testing.T) {
 			if st.Phase != nil {
 				phase = *st.Phase
 			}
-			t.Logf("pi_status{jobId}: status=%s phase=%s blind=%v intermediate=%d", st.Status, phase, st.BlindWindow, len(st.Intermediate))
+			t.Logf("pi_status{jobId}: status=%s phase=%s blind=%v events=%d", st.Status, phase, st.BlindWindow, len(st.Events))
 			statusFlow = append(statusFlow, st.Status)
 		}
 		final = st
