@@ -19,11 +19,30 @@ func TestConstants(t *testing.T) {
 	if StaleThreshold <= time.Duration(ForcedAgentTimeoutMs)*time.Millisecond {
 		t.Errorf("StaleThreshold (%v) must exceed the injected agent timeout (%dms)", StaleThreshold, ForcedAgentTimeoutMs)
 	}
-	if WaitCap != 60*time.Second {
-		t.Errorf("WaitCap = %v, want 60s", WaitCap)
+	if WaitCapDefault != 5*time.Minute {
+		t.Errorf("WaitCapDefault = %v, want 5m", WaitCapDefault)
 	}
 	if MaxAuthoringRetries != 2 {
 		t.Errorf("MaxAuthoringRetries = %d, want 2", MaxAuthoringRetries)
+	}
+}
+
+func TestWaitCap_EnvOverride(t *testing.T) {
+	t.Setenv("PI_MCP_WAIT_CAP", "")
+	if got := WaitCap(); got != WaitCapDefault {
+		t.Fatalf("unset env: want default %v, got %v", WaitCapDefault, got)
+	}
+	t.Setenv("PI_MCP_WAIT_CAP", "90s")
+	if got := WaitCap(); got != 90*time.Second {
+		t.Fatalf("90s override: got %v", got)
+	}
+	t.Setenv("PI_MCP_WAIT_CAP", "garbage")
+	if got := WaitCap(); got != WaitCapDefault {
+		t.Fatalf("invalid env falls back to default, got %v", got)
+	}
+	t.Setenv("PI_MCP_WAIT_CAP", "-5s")
+	if got := WaitCap(); got != WaitCapDefault {
+		t.Fatalf("non-positive env falls back to default, got %v", got)
 	}
 }
 

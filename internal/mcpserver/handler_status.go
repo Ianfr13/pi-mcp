@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	defaultWaitCap      = config.WaitCap
 	defaultPollInterval = 250 * time.Millisecond
 )
 
