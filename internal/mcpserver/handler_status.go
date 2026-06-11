@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	defaultPollInterval = 250 * time.Millisecond
+	// fallback only: fsnotify wakes carry the latency; the ticker reconciles drops
+	defaultPollInterval = 2 * time.Second
 
 	// graceRetries x graceInterval bounds the transient parse-error grace (~2s):
 	// a wake/tick can catch the run file mid-write (this Load path has no .bak
@@ -356,6 +357,14 @@ func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 	baseStalled := false
 	sawBlind := false // the wait STARTED before the run file existed
 
+	var wake <-chan struct{}
+	if s.subscribe != nil {
+		if ch, cancel, err := s.subscribe(tgt.runsDir); err == nil {
+			wake = ch
+			defer cancel()
+		}
+	}
+
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
@@ -403,6 +412,7 @@ func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-wake: // nil channel when unsubscribed: blocks forever, ticker rules
 		}
 	}
 }

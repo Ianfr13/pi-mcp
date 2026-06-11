@@ -6,6 +6,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"pi-mcp/internal/config"
+	"pi-mcp/internal/watch"
 )
 
 // Server holds the dependencies the handlers need and tunables for long-poll.
@@ -24,6 +25,11 @@ type Server struct {
 	// pidAlive reports whether the job's process is alive (same session). Injected so
 	// tests can simulate dead processes; defaults to "assume alive" when nil.
 	pidAlive func(pid int) bool
+
+	// subscribe is the fsnotify seam (watch.Subscribe in production; nil in
+	// most tests -> pure ticker). Events are hints: the wait re-reads and
+	// re-evaluates its predicate on every wake regardless of source.
+	subscribe func(dir string) (<-chan struct{}, func(), error)
 }
 
 // New builds a Server with production defaults.
@@ -37,6 +43,7 @@ func New(js JobsService, store RunStore) *Server {
 		delta:        newDeltaTracker(),
 		sleep:        time.Sleep,
 		pidAlive:     func(int) bool { return true },
+		subscribe:    watch.Subscribe,
 	}
 }
 
