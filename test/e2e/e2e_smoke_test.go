@@ -225,6 +225,48 @@ func TestE2ESmoke(t *testing.T) {
 		t.Logf("metadata by_model: %v agentCount=%d", final.Metadata.ByModel, final.Metadata.AgentCount)
 	}
 
+	// Delta contract: the polling loop above consumed every event, so a fresh
+	// call delivers nothing new — and from_start re-delivers everything.
+	{
+		stRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "pi_status",
+			Arguments: map[string]any{"jobId": wf.JobID},
+		})
+		if err != nil || stRes.IsError {
+			t.Fatalf("post-terminal pi_status failed: err=%v isError=%v", err, stRes != nil && stRes.IsError)
+		}
+		var st model.StatusOutput
+		if err := decodeResult(stRes, &st); err != nil {
+			t.Fatalf("decode post-terminal StatusOutput: %v", err)
+		}
+		if st.Events == nil {
+			t.Fatalf("events must serialize as [], never null")
+		}
+		if len(st.Events) != 0 {
+			t.Fatalf("delta broken: fresh post-terminal call re-delivered %d events", len(st.Events))
+		}
+		if st.AgentsTotal == 0 || st.AgentsDone == 0 {
+			t.Fatalf("agents counters missing on completed run: done=%d total=%d", st.AgentsDone, st.AgentsTotal)
+		}
+
+		reRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "pi_status",
+			Arguments: map[string]any{"jobId": wf.JobID, "from_start": true},
+		})
+		if err != nil || reRes.IsError {
+			t.Fatalf("from_start pi_status failed: err=%v", err)
+		}
+		var re model.StatusOutput
+		if err := decodeResult(reRes, &re); err != nil {
+			t.Fatalf("decode from_start StatusOutput: %v", err)
+		}
+		if len(re.Events) == 0 {
+			t.Fatalf("from_start must re-deliver all events, got 0")
+		}
+		t.Logf("delta contract OK: post-terminal events=0, from_start events=%d, agents %d/%d",
+			len(re.Events), st.AgentsDone, st.AgentsTotal)
+	}
+
 	// 7/8. Cross-check against the on-disk run file (authoritative) for the
 	// multi-model fan-out evidence. This corroborates the jobId-path verdict.
 	ra, runPath := readRunFile(t, workDir)
