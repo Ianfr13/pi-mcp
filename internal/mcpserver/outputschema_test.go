@@ -96,6 +96,14 @@ func TestStatusOutputPassesGoSDKSchemaValidation(t *testing.T) {
 	if first.Result != nil {
 		t.Fatalf("events default to no result body; got %#v", first.Result)
 	}
+	// Agent count fields are part of the schema: the reflection walk must
+	// cover them, so the validation pass exercises the wire types end-to-end.
+	if out.AgentsTotal != 4 {
+		t.Fatalf("agentsTotal: want 4, got %d", out.AgentsTotal)
+	}
+	if out.AgentsDone != 4 {
+		t.Fatalf("agentsDone: want 4 (every journal entry joined an agent), got %d", out.AgentsDone)
+	}
 	// A separate from_start + include_results call must surface the journal object.
 	irRes, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "pi_status",
