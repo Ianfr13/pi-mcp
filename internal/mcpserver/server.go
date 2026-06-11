@@ -17,6 +17,9 @@ type Server struct {
 	waitCap      time.Duration    // long-poll cap
 	pollInterval time.Duration    // long-poll tick
 	delta        *deltaTracker    // per-job delivery + early-warning state (delta protocol)
+	// sleep is the injectable seam for the transient parse-error grace (tests
+	// use a no-op; production uses time.Sleep). NOT used for the long-poll.
+	sleep func(time.Duration)
 
 	// pidAlive reports whether the job's process is alive (same session). Injected so
 	// tests can simulate dead processes; defaults to "assume alive" when nil.
@@ -32,6 +35,7 @@ func New(js JobsService, store RunStore) *Server {
 		waitCap:      config.WaitCap(),
 		pollInterval: defaultPollInterval,
 		delta:        newDeltaTracker(),
+		sleep:        time.Sleep,
 		pidAlive:     func(int) bool { return true },
 	}
 }

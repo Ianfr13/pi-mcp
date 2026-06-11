@@ -14,6 +14,12 @@ import (
 
 const (
 	defaultPollInterval = 250 * time.Millisecond
+
+	// graceRetries x graceInterval bounds the transient parse-error grace (~2s):
+	// a wake/tick can catch the run file mid-write (this Load path has no .bak
+	// fallback). A still-running job retries; a persistent error still fails.
+	graceRetries  = 4
+	graceInterval = 500 * time.Millisecond
 )
 
 // snapshot captures the long-poll wake inputs. running<->paused is collapsed via mapDiskStatus
@@ -145,7 +151,7 @@ func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOut
 	}
 	worktreeActive := wtOK && now.Sub(wtLast).Abs() <= config.StaleThreshold
 
-	run, err := s.store.Load(tgt.runsDir, tgt.runID)
+	run, err := s.loadWithGrace(tgt)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
 			if tgt.hasJob {
@@ -412,4 +418,22 @@ func lastActivity(run *model.Run, wtLast time.Time, wtOK bool) (time.Time, bool)
 		la, ok = wtLast, true
 	}
 	return la, ok
+}
+
+// loadWithGrace wraps store.Load with the transient-decode grace: ErrRunNotFound
+// passes through untouched (the blind window has its own handling), terminal
+// jobs never wait (nothing is mid-write), any other error retries briefly.
+func (s *Server) loadWithGrace(tgt resolved) (*model.Run, error) {
+	run, err := s.store.Load(tgt.runsDir, tgt.runID)
+	if err == nil || errors.Is(err, ErrRunNotFound) || isTerminal(string(tgt.jobStatus)) {
+		return run, err
+	}
+	for i := 0; i < graceRetries; i++ {
+		s.sleep(graceInterval)
+		run, err = s.store.Load(tgt.runsDir, tgt.runID)
+		if err == nil || errors.Is(err, ErrRunNotFound) {
+			return run, err
+		}
+	}
+	return run, err
 }

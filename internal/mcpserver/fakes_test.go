@@ -65,9 +65,13 @@ func (f *fakeJobs) WorktreeActivity(jobID string) (int, time.Time, bool) {
 
 // fakeStore implements RunStore. runs is keyed by runsDir+"/"+runID.
 // seq lets a test return a DIFFERENT *model.Run on successive Load calls (long-poll growth).
+// seqErrs is optional, parallel to seq: a non-nil entry makes the i-th Load
+// return that error (simulates a mid-write decode failure for the transient-grace
+// path).
 type fakeStore struct {
 	runs      map[string]*model.Run
 	seq       []*model.Run // if non-nil, returned in order, last value sticks
+	seqErrs   []error      // optional, parallel to seq: non-nil entry -> Load returns it
 	calls     int
 	list      []model.ListItem
 	listErr   error
@@ -82,6 +86,9 @@ func (f *fakeStore) Load(runsDir, runID string) (*model.Run, error) {
 		f.calls++
 		if i >= len(f.seq) {
 			i = len(f.seq) - 1
+		}
+		if i < len(f.seqErrs) && f.seqErrs[i] != nil {
+			return nil, f.seqErrs[i]
 		}
 		r := f.seq[i]
 		if r == nil {

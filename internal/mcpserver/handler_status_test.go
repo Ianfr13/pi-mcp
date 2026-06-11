@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -767,6 +768,53 @@ func TestWait_EarlyInactivityWarningWakesOnce(t *testing.T) {
 	}
 	if out.Status != "stalled" {
 		t.Fatalf("stale run file is stalled, got %q", out.Status)
+	}
+}
+
+// --- Phase 1 / Task 7: transient parse-error grace ---
+
+func TestStatus_TransientParseErrorRetriesBeforeFailing(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.sleep = func(time.Duration) {} // no real waiting in tests
+
+	run := buildRun()
+	run.Status = "running"
+	decodeErr := errors.New("unexpected end of JSON input") // NOT ErrRunNotFound
+	store.seq = []*model.Run{nil, run}                      // 1st Load: error, 2nd: good
+	store.seqErrs = []error{decodeErr, nil}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+
+	_, out, err := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	if out.Status == "failed" || out.Error == config.ErrPersistenceError {
+		t.Fatalf("transient decode error must not surface failed: %+v", out)
+	}
+}
+
+func TestStatus_PersistentParseErrorStillFails(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.sleep = func(time.Duration) {}
+
+	decodeErr := errors.New("unexpected end of JSON input")
+	store.seq = []*model.Run{nil, nil, nil, nil, nil}
+	store.seqErrs = []error{decodeErr, decodeErr, decodeErr, decodeErr, decodeErr}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: mustTime("2026-06-11T10:00:00Z")}
+	jobs.lookup["j1"] = rec
+
+	_, out, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1"})
+	if out.Status != "failed" || out.Error != config.ErrPersistenceError {
+		t.Fatalf("persistent decode error still fails: %+v", out)
 	}
 }
 
