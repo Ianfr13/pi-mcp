@@ -65,7 +65,7 @@ type StatusEvent struct {
 }
 ```
 
-In `StatusOutput`: DELETE the `Intermediate []IntermediateResult` field and add the three new fields. Also update the `Status` comment vocabulary:
+In `StatusOutput`: ADD the three new fields and KEEP `Intermediate` for now — it is deleted in Task 4 together with the handler wiring and every test that references it, so the tree BUILDS AT EVERY COMMIT (review finding: no broken intermediate commits). Update the `Status` comment vocabulary:
 
 ```go
 type StatusOutput struct {
@@ -76,11 +76,12 @@ type StatusOutput struct {
 	BlindWindow bool    `json:"blind_window"` // true while run file does not yet exist
 	// Events is the DELTA: agents finished since the previous pi_status call
 	// for this job (server-side tracking; see StatusInput.FromStart). Replaces
-	// the old always-full intermediate[] list, which re-injected every result
+	// the always-full intermediate[] list, which re-injected every result
 	// into the caller's context on every poll.
-	Events      []StatusEvent   `json:"events"`
-	AgentsDone  int             `json:"agentsDone"`  // agents with a journal entry (errored counts as done); 0 in blind window
-	AgentsTotal int             `json:"agentsTotal"` // len(run.agents); 0 in blind window
+	Events      []StatusEvent        `json:"events"`
+	AgentsDone  int                  `json:"agentsDone"`  // agents with a journal entry (errored counts as done); 0 in blind window
+	AgentsTotal int                  `json:"agentsTotal"` // len(run.agents); 0 in blind window
+	Intermediate []IntermediateResult `json:"intermediate"` // DEPRECATED: removed in Task 4 (delta replaces it)
 	Result      any             `json:"result,omitempty" jsonschema:"the synthesized workflow result as arbitrary JSON, coerced to the §5.4 contract object when completed"`
 	Metadata    *StatusMetadata `json:"metadata,omitempty"`
 	Write       *WriteInfo      `json:"write,omitempty"`
@@ -90,24 +91,19 @@ type StatusOutput struct {
 }
 ```
 
-Keep `IntermediateResult` itself — the dashboard's `JobDetail.Intermediate` still uses it.
+Keep `IntermediateResult` itself permanently — the dashboard's `JobDetail.Intermediate` still uses it.
 
-- [ ] **Step 2: Find every compile break**
+- [ ] **Step 2: Verify the tree builds and tests pass (additive change only)**
 
-Run: `go build ./... 2>&1 | head -30`
-Expected: errors in `internal/mcpserver/handler_status.go` (the `out.Intermediate =` line) and possibly tests. Do NOT fix handler logic yet — just stub the broken line by deleting `out.Intermediate = runstore.Intermediates(run, config.MaxInlineResultBytes)` (Task 4 adds the replacement). Test files that reference `out.Intermediate` (`handler_status_test.go:135` area, `outputschema_test.go`) will be fixed in Tasks 4–5; for now run only the model package:
-
-Run: `go test -race -count=1 ./internal/model/`
-Expected: PASS
+Run: `go build ./... && go test -race -count=1 ./internal/model/ ./internal/mcpserver/`
+Expected: PASS — nothing was removed yet.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add internal/model/model.go internal/mcpserver/handler_status.go
+git add internal/model/model.go
 git commit -m "feat(model): StatusEvent delta types, from_start/include_results inputs"
 ```
-
-(The tree does not fully build between Tasks 1–4; that is acceptable inside Phase 1's commit train ONLY if executing inline. If executing via subagents, fold Tasks 1+2+4 into one dispatch so each commit builds. Preferred: implement Tasks 1, 2, 4 then run the full build before committing each — adjust commit points so `go build ./...` passes at every commit: simplest is to do Task 1 Step 1, Task 2, Task 4, then commit all together.)
 
 ### Task 2: `runstore.EventsSince` — journal→agent delta join
 
@@ -360,6 +356,8 @@ Update every test that asserted stale→"failed" through Derive to expect "stall
 
 Also check `buildStatus` (`internal/mcpserver/handler_status.go` ~line 207): `if out.Status == "failed" || out.Status == "aborted"` sets Error — "stalled" is intentionally NOT in that list; verify no other `== "failed"` comparisons need a stalled case (grep: `grep -rn '"failed"' internal/mcpserver internal/dashboard`).
 
+Dashboard counts (review finding #16, decided explicitly): add a `Stalled int \`json:"stalled"\`` field to `dashboard.Counts` and a `case "stalled": st.Counts.Stalled++` arm in `BuildState`'s switch — otherwise stalled rows silently count only toward Total. The web UI ignores unknown JSON fields, so app.js needs no change (it can render the new bucket later).
+
 Expected after fixes: `go test -race -count=1 ./...` PASS.
 
 - [ ] **Step 5: Commit**
@@ -581,7 +579,9 @@ In `New(...)` add `delta: newDeltaTracker(),`.
 
 `internal/mcpserver/handler_status.go`:
 
-1. `handleStatus` passes the input through:
+1. `handleStatus` passes the input through. `from_start` SKIPS the wait — the
+caller asked for an immediate replay; waiting first could block the redelivery
+for the whole cap (review finding #4):
 
 ```go
 func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in model.StatusInput) (*mcp.CallToolResult, model.StatusOutput, error) {
@@ -590,7 +590,8 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 		return nil, model.StatusOutput{}, err
 	}
 
-	if in.Wait {
+	// from_start is a replay request: deliver immediately, never wait first.
+	if in.Wait && !in.FromStart {
 		s.waitForChange(ctx, tgt)
 	}
 
@@ -599,7 +600,13 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 }
 ```
 
-2. `buildStatus` gains the input param: `func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOutput`. Where the old `out.Intermediate = runstore.Intermediates(...)` line was (right after `diskStatus := ...` / `out.Status = liveStatus(...)`), insert:
+2. `buildStatus` gains the input param: `func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOutput`. Its FIRST line initializes Events so it serializes as `[]`, never `null`, on EVERY path (blind window, queued, parse error, terminal-without-run — review finding #5):
+
+```go
+	out := model.StatusOutput{JobID: tgt.jobID, Events: []model.StatusEvent{}}
+```
+
+Where the old `out.Intermediate = runstore.Intermediates(...)` line is (right after `out.Status = liveStatus(...)`), replace it with:
 
 ```go
 	// Delta events: only journal positions not yet delivered to this session.
@@ -607,23 +614,31 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcp.CallToolRequest, in mo
 	// the final result arrives via out.Result, not via re-played events.
 	from := s.delta.take(deltaKey(tgt), len(run.Journal), in.FromStart)
 	out.Events = runstore.EventsSince(run, from, in.IncludeResults, config.MaxInlineResultBytes)
+	// agentsDone = agents WITH A JOURNAL ENTRY (spec wording; errored agents
+	// have one too). NOT agent.Status counting — a done-status agent whose
+	// journal entry has not landed yet is not "done" for delta purposes.
 	out.AgentsTotal = len(run.Agents)
+	byCall := make(map[int]bool, len(run.Agents))
 	for i := range run.Agents {
-		// An errored agent has a journal entry: it is "done" for progress purposes.
-		if st := run.Agents[i].Status; st == "done" || st == "error" {
+		byCall[run.Agents[i].CallIndex] = true
+	}
+	for i := range run.Journal {
+		if byCall[run.Journal[i].Index] {
 			out.AgentsDone++
 		}
 	}
 ```
 
-3. Every other `s.buildStatus(tgt)` caller (grep `buildStatus(`) passes `in` — only handleStatus calls it.
+3. NOW delete the deprecated `Intermediate` field from `model.StatusOutput` (added-then-kept in Task 1) — this commit removes the field, the handler line, and every test reference together, so the tree still builds.
 
-4. Fix remaining test references to `out.Intermediate` in `handler_status_test.go` (e.g. `TestStatus_CompletedReadResultAndIntermediate` ~line 135): assert on `out.Events` instead — rename to `TestStatus_CompletedReadResultAndEvents`, expect `len(out.Events) == len(run.Journal)` on the FIRST call. Each test constructs a fresh `Server` via `New`, so tracker state never leaks between tests.
+4. Every other `s.buildStatus(tgt)` caller (grep `buildStatus(`) passes `in` — only handleStatus calls it.
+
+5. Fix remaining test references to `out.Intermediate` in `handler_status_test.go` (e.g. `TestStatus_CompletedReadResultAndIntermediate` ~line 135): assert on `out.Events` instead — rename to `TestStatus_CompletedReadResultAndEvents`, expect `len(out.Events) == len(run.Journal)` on the FIRST call. Each test constructs a fresh `Server` via `New`, so tracker state never leaks between tests. Add one assertion somewhere convenient (e.g. the blind-window test): `if out.Events == nil { t.Fatalf("events must be [] on every path, never null") }`.
 
 - [ ] **Step 6: Run the package tests**
 
 Run: `go test -race -count=1 ./internal/mcpserver/ 2>&1 | tail -5`
-Expected: FAIL only in `outputschema_test.go` if it references `Intermediate` (fix in Task 5); everything else PASS. If outputschema fails, adapt it now: populate `Events: []model.StatusEvent{{Label: "a", Model: "m", Phase: "p", Status: "ok"}}` instead of `Intermediate` in its fixture (the test validates StatusOutput against the reflected go-sdk schema).
+Expected: any `outputschema_test.go` reference to `Intermediate` fails to compile — adapt it in THIS task (the field is gone): populate `Events: []model.StatusEvent{{Label: "a", Model: "m", Phase: "p", Status: "ok"}}` in its fixture (the test validates StatusOutput against the reflected go-sdk schema). Everything must PASS before the commit.
 
 - [ ] **Step 7: Full build + tests, then commit**
 
@@ -631,7 +646,7 @@ Run: `go build ./... && go test -race -count=1 ./... 2>&1 | grep -E "FAIL|ok " |
 Expected: all `ok`
 
 ```bash
-git add internal/mcpserver/
+git add internal/mcpserver/ internal/model/
 git commit -m "feat(mcpserver): pi_status delta events with server-side per-job tracking"
 ```
 
@@ -904,6 +919,48 @@ func (s *Server) worktreeLast(tgt resolved) (int, time.Time, bool) {
 	}
 	return s.jobs.WorktreeActivity(tgt.jobID)
 }
+```
+
+ALSO (review finding #3): the warning/stalled response must CARRY
+`progress.lastActivitySeconds` for READ jobs too — today `progressBlock` only
+sets it when `wtOK` (write jobs). Change `progressBlock` to take the run's
+updatedAt and use the NEWEST activity signal:
+
+```go
+// progressBlock builds the elapsed-time heartbeat plus the age of the newest
+// observed activity: run-file updatedAt (all modes) vs worktree mtime (write).
+// This is what makes the early-inactivity warning legible to the caller
+// ("no activity for Xmin") even for read jobs. Durations clamp at zero.
+func progressBlock(tgt resolved, now time.Time, runUpdated *time.Time, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
+	if !tgt.hasJob || tgt.startedAt.IsZero() {
+		return nil
+	}
+	p := &model.Progress{ElapsedSeconds: clampSeconds(now.Sub(tgt.startedAt))}
+	if wtOK {
+		p.WorktreeFiles = wtFiles
+	}
+	var last time.Time
+	if runUpdated != nil {
+		last = *runUpdated
+	}
+	if wtOK && wtLast.After(last) {
+		last = wtLast
+	}
+	if !last.IsZero() {
+		la := clampSeconds(now.Sub(last))
+		p.LastActivitySeconds = &la
+	}
+	return p
+}
+```
+
+Update both call sites in `buildStatus`: the blind-window one passes `nil`
+(no run yet), the post-Load one passes `run.UpdatedAt`. Add an assertion in
+the early-warning test: the returned `out.Progress.LastActivitySeconds` is
+non-nil and ≥ 300 for a read-mode job quiet past EarlyInactivityWarn.
+
+```go
+// (continuation of handler_status.go shown above)
 
 // lastActivity is the newest observed activity: run.updatedAt vs the worktree
 // mtime. ok=false when neither signal exists (never warn on missing data).
@@ -1131,10 +1188,17 @@ Read `test/e2e/e2e_smoke_test.go`. Where it polls `pi_status` to completion, add
 Run: `PI_MCP_E2E=1 go test ./test/e2e/ -run TestE2ESmoke -v -timeout 10m`
 Expected: PASS, with the full log shown to the user verbatim (~60s, costs ~$0.13).
 
-- [ ] **Step 3: Verify the Claude Code MCP tool timeout (spec deploy prerequisite)**
+- [ ] **Step 3: Verify the Claude Code MCP tool timeout EMPIRICALLY (spec deploy prerequisite)**
 
-Run: `claude config get 2>/dev/null | grep -i timeout; env | grep -i "MCP_T"`
-If the effective MCP tool timeout is ≤ 5min, either export `MCP_TOOL_TIMEOUT=360000` (ms) in the environment that launches Claude Code, or set `PI_MCP_WAIT_CAP=60s` in the pi-mcp server env as the conservative fallback. Record which was done in the commit/PR notes. Do not skip: a client timeout below WaitCap strands every wait.
+Config greps are not proof (review finding #13) — run a controlled long wait through the REAL client path:
+
+1. Deploy the Phase 1 server (Step 4) with a temporary `PI_MCP_WAIT_CAP=90s` in the pi-mcp server env.
+2. From a fresh Claude Code session, start a `pi_workflow` and immediately call `pi_status{jobId, wait:true}` during a quiet stretch (the blind window works: ~20s of guaranteed silence, so pick a moment with >90s of expected quiet or use a long-running task).
+3. Observe: the tool call must RETURN normally after ~90s, not be killed by the client at ~60s.
+4. If the client kills it: export `MCP_TOOL_TIMEOUT=360000` (ms) in the exact environment that launches Claude Code (check the shell profile / launcher actually used on this box), re-test, and only then raise to the 5min default. If it cannot be raised, set `PI_MCP_WAIT_CAP=60s` permanently in the server env.
+5. Record the observed timeout and the chosen setting in the deploy commit message.
+
+Do not skip: a client timeout below WaitCap strands every wait.
 
 - [ ] **Step 4: Deploy to prod (user ships verified changes straight to prod)**
 
@@ -1367,11 +1431,17 @@ func run(w *fsnotify.Watcher, target string, ch chan struct{}, done chan struct{
 			if !ok {
 				return
 			}
-			// Ancestor watch saw the target (or a path toward it) appear:
-			// arm the precise watch. Best-effort — the ancestor watch plus
-			// the consumer's fallback ticker cover the race window.
-			if ev.Op.Has(fsnotify.Create) && within(target, ev.Name) {
-				_ = w.Add(target)
+			// Re-arm on EVERY create: fsnotify is NOT recursive, so when the
+			// target is late-born behind nested missing dirs (parent/a/b/runs),
+			// each intermediate mkdir is visible only on the currently-watched
+			// ancestor. addNearest walks the watch as deep as currently
+			// possible — by the time the target exists it is watched directly.
+			// Cheap no-op once armed; the consumer's fallback ticker covers
+			// any residual race window (events-are-hints invariant).
+			if ev.Op.Has(fsnotify.Create) {
+				_ = addNearest(w, target)
+				// A create on the path TOWARD the target is itself a useful
+				// hint (e.g. the runs dir appearing): fall through to within().
 			}
 			if !within(target, ev.Name) {
 				continue
@@ -1434,22 +1504,20 @@ func within(target, name string) bool {
 - [ ] **Step 3: Run tests**
 
 Run: `go test -race -count=1 ./internal/watch/ -v`
-Expected: PASS (4 tests). The late-born test is the critical one — if it flakes, the `within` filter for intermediate `a/b` creates plus the `w.Add(target)` re-arm is the area to debug (an event for `a/` creation is NOT within target; the `a/b/runs` create IS; intermediate dirs between ancestor and target may need: on ANY create event, retry `w.Add(target)` — simplest robust form: move the `w.Add(target)` re-arm attempt outside the `within` check, i.e. try it on every Create event; it is a cheap no-op once armed).
+Expected: PASS (4 tests). The late-born test (nested `a/b/runs` below the
+watched ancestor) is the critical one: it exercises the `addNearest` re-arm on
+every Create, which walks the watch deeper as each intermediate dir appears
+(fsnotify is not recursive — a single `w.Add(target)` retry would miss nested
+creation). If it still flakes under `-race -count=10`, the consumer-side
+fallback ticker is the spec-mandated safety net, but the test must pass
+reliably before commit — debug the within()/re-arm interaction, do not loosen
+the test.
 
-PREFERRED (do this from the start): re-arm on every Create:
-
-```go
-		case ev, ok := <-w.Events:
-			if !ok {
-				return
-			}
-			if ev.Op.Has(fsnotify.Create) {
-				_ = w.Add(target) // cheap no-op when already watching; arms late-born dirs
-			}
-			if !within(target, ev.Name) {
-				continue
-			}
-```
+API-shape note (adversarial review finding, accepted as-is): the spec sketch
+says `Watcher.Subscribe(dir)`; a package-level `Subscribe(dir)` is the same
+contract without an empty struct — consumers inject `func(dir string) (...)`
+seams anyway, which fakes implement directly. Documented here so the deviation
+is deliberate.
 
 - [ ] **Step 4: Commit**
 
@@ -1607,43 +1675,93 @@ git commit -m "feat(mcpserver): fsnotify wake in pi_status long-poll, 2s fallbac
 	}
 ```
 
-(Note the restructure: the resolve-check moves below the select so both wake sources share it.) Keep `correlatePollInterval = 500 * time.Millisecond` — it is already off the hot path and tests depend on it; the watcher only ADDS instant resolution.
-
-- [ ] **Step 2: Write a wake test**
-
-Add to the jobs test file that exercises correlate (same package):
+(Note the restructure: the resolve-check moves below the select so both wake sources share it.) Change the fallback interval per spec (Consumer 2: "fallback 2s" — the watcher carries the latency now):
 
 ```go
+// correlatePollInterval is the FALLBACK cadence for correlate's run-file
+// re-scan. With the fsnotify wake armed it only reconciles dropped events;
+// without one (subscribe nil/failed) it is the sole resolution path.
+var correlatePollInterval = 2 * time.Second
+```
+
+The two existing correlate tests already override this var (2ms/1ms) and are unaffected.
+
+- [ ] **Step 2: Write the wake test**
+
+Append to `internal/jobs/correlate_test.go` (uses that file's existing `lateCorrelator` + `newFakeLauncher` + `mustRegistry` harness):
+
+```go
+// TestCorrelate_EventWakeResolvesWithoutTick proves the fsnotify wake resolves
+// the runId without waiting for the fallback tick: the ticker is 1h, so ONLY
+// the injected wake can drive the second lookup.
 func TestCorrelate_EventWakeResolvesWithoutTick(t *testing.T) {
-	// Arrange a registry whose correlatePollInterval is huge so only the
-	// injected wake can resolve. Follow the existing correlate test's harness
-	// (fake launcher/correlator); set:
 	old := correlatePollInterval
 	correlatePollInterval = time.Hour
 	defer func() { correlatePollInterval = old }()
 
+	dir := t.TempDir()
+	fl := newFakeLauncher("sess-evt")
+	// First (immediate) lookup misses; the wake-driven lookup resolves.
+	corr := &lateCorrelator{failUntil: 1, runID: "run-evt"}
 	wake := make(chan struct{}, 1)
-	// cfg.Subscribe returns the controlled channel:
-	// Subscribe: func(string) (<-chan struct{}, func(), error) { return wake, func() {}, nil }
-	// drive: submit job -> push sessionId -> make the fake correlator start
-	// returning (runID, true) -> send wake -> assert RunID lands promptly.
-	_ = wake // (fill in against the existing fake harness in this file)
+	r := mustRegistry(t, Config{
+		Cap: 1, PersistPath: filepath.Join(dir, "registry.db"),
+		Subscribe: func(string) (<-chan struct{}, func(), error) { return wake, func() {}, nil },
+	}, fl, corr, &fakePruner{})
+
+	rec, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond) // let correlate consume the sessionId + first lookup
+	wake <- struct{}{}                // "the run file just appeared"
+
+	deadline := time.Now().Add(3 * time.Second)
+	var got model.JobRecord
+	for time.Now().Before(deadline) {
+		got, _ = r.Lookup(rec.JobID)
+		if got.RunID == "run-evt" {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got.RunID != "run-evt" {
+		t.Fatalf("event wake did not resolve RunID (ticker is 1h); correlator calls=%d", corr.callCount())
+	}
+	fl.release(0)
+	r.waitJob(rec.JobID)
 }
 ```
 
-IMPORTANT: this test must be completed against the real fake harness in `internal/jobs` (read `registry_test.go` / `fakes` in that package first — the launcher/correlator fakes there define how to push a sessionId and flip the correlator's answer). The assertion: after `wake <- struct{}{}`, `Lookup(jobID).RunID` becomes non-empty within ~1s while the ticker is 1h.
+Run: `go test -race -count=1 ./internal/jobs/ -run TestCorrelate_EventWake -v`
+Expected: FAIL first (`Config` has no `Subscribe`), then PASS after Step 1's implementation.
 
-- [ ] **Step 3: Tests + commit**
+- [ ] **Step 3: Production wiring (concrete, not a note)**
 
-Run: `go test -race -count=1 ./internal/jobs/ 2>&1 | tail -3`
+Modify `internal/app/app.go` — in `buildRegistryReal` (~line 127), add the field to the literal:
+
+```go
+	return jobs.NewRegistry(
+		jobs.Config{
+			Cap:          config.DefaultConcurrencyCap,
+			PersistPath:  persist,
+			WorktreeRoot: wtRoot,
+			SnapshotRun:  snapshotRunFile,
+			Subscribe:    watch.Subscribe,
+		},
+```
+
+with import `"pi-mcp/internal/watch"`.
+
+- [ ] **Step 4: Tests + commit**
+
+Run: `go test -race -count=1 ./internal/jobs/ ./internal/app/ 2>&1 | tail -4`
 Expected: PASS
 
 ```bash
-git add internal/jobs/
-git commit -m "feat(jobs): fsnotify wake resolves correlate without waiting for the poll tick"
+git add internal/jobs/ internal/app/
+git commit -m "feat(jobs): fsnotify wake resolves correlate, 2s fallback, app wiring"
 ```
-
-Wire-up note: whoever constructs the Registry (find with `grep -rn "NewRegistry(" internal/ cmd/`) passes `Subscribe: watch.Subscribe` in the production path (`internal/app`).
 
 ### Task 14: Dashboard — run-file parse cache + event-driven poller
 
@@ -1761,6 +1879,12 @@ func (c *runCache) read(runsDir, runID string) (*parsedRun, error) {
 	path := filepath.Join(runsDir, runID+".json")
 	st, err := os.Stat(path)
 	if err != nil {
+		// File gone: DROP the entry so a later reappearance with a
+		// coincidentally-equal stat key can never serve the old parse
+		// (review finding #10).
+		c.mu.Lock()
+		delete(c.m, path)
+		c.mu.Unlock()
 		return nil, err
 	}
 	key := path
@@ -1820,8 +1944,10 @@ Modify `internal/dashboard/poller.go`:
 ```go
 // Poller fields gain:
 	subscribe func(dir string) (<-chan struct{}, func(), error) // watch seam; nil -> pure ticker
-	subs      map[string]func()                                  // watched dir -> cancel
-	wake      chan struct{}                                      // fan-in of all subscriptions
+
+	wmu  sync.Mutex        // guards subs (Tick is public: tests call it while Run is live)
+	subs map[string]func() // watched dir -> cancel
+	wake chan struct{}     // fan-in of all subscriptions
 ```
 
 `NewPoller` sets `interval: 5 * time.Second` (was 1s), `subscribe: watch.Subscribe`, `subs: map[string]func(){}`, `wake: make(chan struct{}, 1)`.
@@ -1833,16 +1959,13 @@ Modify `internal/dashboard/poller.go`:
 // runs dirs) carry the latency; the 5s ticker reconciles dropped events. The
 // first tick happens immediately.
 func (p *Poller) Run(ctx context.Context) {
-	p.ensureWatch(filepath.Dir(p.registryPath))
 	p.Tick()
 	t := time.NewTicker(p.interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			for _, cancel := range p.subs {
-				cancel()
-			}
+			p.refreshWatches(nil) // cancel everything
 			return
 		case <-t.C:
 		case <-p.wake:
@@ -1851,56 +1974,108 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// ensureWatch subscribes to dir once, forwarding into the fan-in channel.
-func (p *Poller) ensureWatch(dir string) {
-	if p.subscribe == nil || dir == "" {
+// refreshWatches reconciles the subscription set to EXACTLY want (plus the
+// registry DB dir, always wanted while running): new dirs subscribe, dropped
+// dirs cancel — a long-lived dashboard never accumulates stale watches
+// (review finding #12). nil want cancels everything (shutdown). Guarded by
+// wmu: Tick is public and tests call it while Run is live.
+func (p *Poller) refreshWatches(want map[string]bool) {
+	if p.subscribe == nil {
 		return
 	}
-	if _, ok := p.subs[dir]; ok {
-		return
-	}
-	ch, cancel, err := p.subscribe(dir)
-	if err != nil {
-		return // fallback ticker covers it; retried next Tick via refreshWatches
-	}
-	p.subs[dir] = cancel
-	go func() {
-		for range ch {
-			select {
-			case p.wake <- struct{}{}:
-			default:
-			}
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	for dir, cancel := range p.subs {
+		if want == nil || !want[dir] {
+			cancel()
+			delete(p.subs, dir)
 		}
-	}()
+	}
+	if want == nil {
+		return
+	}
+	for dir := range want {
+		if dir == "" {
+			continue
+		}
+		if _, ok := p.subs[dir]; ok {
+			continue
+		}
+		ch, cancel, err := p.subscribe(dir)
+		if err != nil {
+			continue // fallback ticker covers it; retried on the next Tick
+		}
+		p.subs[dir] = cancel
+		go func() {
+			for range ch {
+				select {
+				case p.wake <- struct{}{}:
+				default:
+				}
+			}
+		}()
+	}
 }
 ```
 
-In `Tick`, after `recs, err := p.readRegistry(...)` succeeds, refresh the dynamic set (active jobs only; terminal dirs are left subscribed — cheap — and naturally disappear when pruned):
+In `Tick`, after `recs, err := p.readRegistry(...)` succeeds, compute the wanted set and reconcile:
 
 ```go
+	want := map[string]bool{filepath.Dir(p.registryPath): true}
 	for i := range recs {
 		st := string(recs[i].Status)
 		if st == "running" || st == "queued" {
-			p.ensureWatch(recs[i].RunsDir)
+			want[recs[i].RunsDir] = true
 		}
 	}
+	p.refreshWatches(want)
 ```
-
-CONCURRENCY NOTE: `ensureWatch`/`subs` are now touched from `Run`'s goroutine only (Run calls Tick; `/api/job` handler calls `readRegistry` but not Tick) — keep it that way; if a test calls `Tick()` directly while `Run` is live, guard `subs` with the existing `p.mu`.
 
 - [ ] **Step 5: Poller wake test**
 
-Append to `internal/dashboard/poller_test.go` (follow its existing fake `readRegistry` pattern):
+Append to `internal/dashboard/poller_test.go` (uses the file's existing `captureSink` + `recsForTest` + `nowFresh` helpers; add `"context"` to its imports):
 
 ```go
+// TestPoller_EventWakeTicksWithoutInterval: interval is 1h, so only the
+// injected fsnotify wake can produce the second broadcast.
 func TestPoller_EventWakeTicksWithoutInterval(t *testing.T) {
-	// interval = 1h, inject subscribe returning a controlled channel, send one
-	// wake, assert sink.Broadcast received a frame (registry fake returns one
-	// job). Mirrors the existing Tick/Broadcast test harness in this file.
+	sink := &captureSink{}
+	p := NewPoller("unused.db", "/state", sink)
+	p.interval = time.Hour
+	wake := make(chan struct{}, 1)
+	p.subscribe = func(string) (<-chan struct{}, func(), error) { return wake, func() {}, nil }
+
+	calls := 0
+	p.readRegistry = func(string) ([]model.JobRecord, error) {
+		calls++
+		recs := recsForTest()
+		if calls > 1 {
+			recs = recs[:len(recs)-1] // shrink the fleet so the woken tick broadcasts
+		}
+		return recs, nil
+	}
+	p.now = func() time.Time { return nowFresh }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	waitCount := func(n int, what string) {
+		deadline := time.Now().Add(2 * time.Second)
+		for sink.count() < n && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if sink.count() < n {
+			t.Fatalf("%s: broadcasts=%d want >=%d", what, sink.count(), n)
+		}
+	}
+	waitCount(1, "initial tick")
+	wake <- struct{}{}
+	waitCount(2, "event wake (interval is 1h)")
 }
 ```
 
-Fill in against the file's existing `Sink` fake; the assertion: with `interval: time.Hour`, a `wake <- struct{}{}` produces a broadcast within 1s.
+Also add a race-coverage line to the run: this test plus the existing direct-`Tick()` tests under `-race` exercise the `wmu` guard.
 
 - [ ] **Step 6: Tests + commit**
 
@@ -1949,6 +2124,6 @@ git add -A && git commit -m "feat: phase 2 event-driven updates live"
 
 ## Self-review notes (already applied)
 
-- Spec coverage: delta protocol (T1–T4), stalled vocabulary (T3), WaitCap env + client-timeout check (T5, T9), early warning + stall wake (T6), parse grace (T7), schema/tests (T8), fsnotify invariant + late-born dir (T11), three consumers (T12–T14), cache (T14), two-phase deploy (T9, T15).
-- Known judgment call vs spec text: the cache does a per-tick `os.Stat` even for terminal jobs instead of a "never stat terminal" special case — the stat is ~1µs and keeps one invalidation rule for every job; the spec's intent (never re-PARSE unchanged terminal files) holds.
-- Tasks 13 (correlate wake test) and 14 (poller wake test) intentionally reference the existing fake harnesses rather than inventing parallel ones — the implementer MUST read those test files first and complete the skeletons against them.
+- Spec coverage: delta protocol (T1–T4), stalled vocabulary + dashboard count (T3), WaitCap env + empirical client-timeout check (T5, T9), early warning + stall wake + read-job lastActivitySeconds (T6), parse grace (T7), schema/tests (T8), fsnotify invariant + nested late-born dir re-arm (T11), three consumers with concrete app wiring (T12–T13), poller watch-set reconcile + cache with stat-miss drop (T14), two-phase deploy (T9, T15).
+- Adversarial plan review (2026-06-11) applied: every commit builds (Intermediate removed in T4, not T1); agentsDone counts journal entries joined to agents, not agent statuses; from_start skips the wait; Events serializes as [] on every path; correlate fallback is 2s per spec with `internal/app/app.go` wiring as a concrete step; late-born watch re-arms via addNearest on every Create (nested dirs); poller subs guarded by wmu and reconciled to the exact wanted set; cache drops entries on stat-miss; T13/T14 tests are complete code against the real harnesses (`lateCorrelator`/`mustRegistry`, `captureSink`/`recsForTest`).
+- Accepted deviations (documented, spec amended to match): the run-file cache keys invalidation purely on the (mtime,size) stat key — no registry-terminal special case (one rule, same effect: unchanged files never re-parse); `internal/watch` exposes a package-level `Subscribe` instead of a `Watcher` type (consumers inject func seams either way).

@@ -45,7 +45,9 @@ filling its context.
 Thin wrapper over `github.com/fsnotify/fsnotify` (new dependency; mature,
 no transitive deps).
 
-- `Watcher.Subscribe(dir) (<-chan struct{}, cancel func(), error)` —
+- `watch.Subscribe(dir) (<-chan struct{}, cancel func(), error)` —
+  package-level function (amended: no `Watcher` type; consumers inject
+  `func(dir string) (...)` seams that fakes implement directly) —
   notification channel for any create/write/rename in `dir`, debounced
   ~50ms (coalesce write bursts; pi rewrites the run file frequently).
 - **Events are hints, never correctness (invariant, added after
@@ -122,13 +124,15 @@ will inject a fake watcher instead or keep using the fallback ticker).
   happens to touch.
 - Event → debounce → `Tick()`. Fallback ticker 5s (was 1s).
 - **Run-file read cache** in the `readRun` path keyed by (path, mtime,
-  size — ext4 has ns mtime granularity on this box): active jobs are
-  re-parsed only when the key changed. **Amended:** "terminal" caching
-  keys off the REGISTRY terminal status (authoritative, per existing
-  status-precedence rule), and the cache entry is dropped if the file's
-  key changes anyway (covers `.bak` repair / rename-replacement). Today
-  `BuildState` re-reads + re-parses EVERY job's run file every second,
-  including terminal ones that can never change.
+  size — ext4 has ns mtime granularity on this box): ANY job (terminal or
+  active) is re-parsed only when the stat key changed, and the entry is
+  dropped on stat-miss so a reappearing file never serves a stale parse.
+  **Amended (plan review):** one invalidation rule for every job — no
+  registry-terminal special case; the per-tick stat (~1µs) is not the
+  cost, the JSON parse is, and an unchanged terminal file never re-parses
+  under the same rule. Today `BuildState` re-reads + re-parses EVERY
+  job's run file every second, including terminal ones that can never
+  change.
 - Existing hash-gate on broadcast stays (idle fleet pushes nothing).
 - Front-end unchanged: app.js already refetches the open job detail
   (throttled) on each SSE state event, so intermediates render
