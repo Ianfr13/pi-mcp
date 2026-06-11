@@ -32,6 +32,13 @@ const ForcedAgentTimeoutMs int64 = 1_200_000
 // threshold does not delay real failure detection. 20-min timeout + 10-min margin.
 const StaleThreshold = time.Duration(ForcedAgentTimeoutMs)*time.Millisecond + 10*time.Minute
 
+// EarlyInactivityWarn: a non-terminal run with no observed activity (run-file
+// updatedAt, write-job worktree mtime) for this long wakes a pi_status wait
+// ONCE per activity epoch, carrying the progress heartbeat — informational,
+// the status stays running. Only StaleThreshold (~30min) flips the status to
+// stalled. Must stay well under StaleThreshold and over typical agent bursts.
+const EarlyInactivityWarn = 5 * time.Minute
+
 // MaxAuthoringRetries is how many EXTRA times pi-mcp relaunches pi when a job
 // fails BEFORE any run file is created (the workflow never started — e.g. the
 // orchestrator authored an invalid script). Retrying is cheap (the agent fleet

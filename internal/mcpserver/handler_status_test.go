@@ -714,3 +714,99 @@ func TestStatus_EventsAreDeltaAcrossCalls(t *testing.T) {
 		t.Fatalf("include_results attaches bodies: %+v", out4.Events)
 	}
 }
+
+// --- Phase 1 / Task 6: early-inactivity warning + stalled-transition wake ---
+
+// waitClock returns a fixed-time clock so the wait's deadline check never
+// fires; the only paths to wake the wait are the warning / stalled transition.
+func waitClock(start time.Time) func() time.Time {
+	return func() time.Time { return start }
+}
+
+func TestWait_EarlyInactivityWarningWakesOnce(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Millisecond
+	s.waitCap = time.Hour // never the cap: the warning must end the wait
+
+	start := mustTime("2026-06-11T10:00:00Z")
+	stale := start.Add(-(config.EarlyInactivityWarn + time.Minute))
+	run := buildRun()
+	run.Status = "running"
+	run.UpdatedAt = &stale
+	store.runs["/runs/r1"] = run
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: stale}
+	jobs.lookup["j1"] = rec
+
+	s.now = waitClock(start)
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	select {
+	case <-done: // woke on the warning, not the 1h cap
+	case <-time.After(5 * time.Second):
+		t.Fatalf("inactivity warning did not wake the wait")
+	}
+
+	// Same epoch again: must NOT wake early — it runs to the (now short) cap.
+	// Status is "stalled" (run file is stale, not a warning artifact), but the
+	// wake cause is the cap, not a re-warning: the tracker was armed on the
+	// first call and the activity epoch did not advance.
+	s.waitCap = 50 * time.Millisecond
+	s.now = time.Now // real clock so the cap is a real-time deadline
+	startCap := time.Now()
+	_, out, _ := s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+	elapsed := time.Since(startCap)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("second wait must run to the cap (50ms), took %v", elapsed)
+	}
+	if out.Status != "stalled" {
+		t.Fatalf("stale run file is stalled, got %q", out.Status)
+	}
+}
+
+func TestWait_StalledTransitionWakes(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Millisecond
+	s.waitCap = time.Hour
+
+	start := mustTime("2026-06-11T10:00:00Z")
+	fresh := start.Add(-time.Minute)
+	overStale := start.Add(-(config.StaleThreshold + time.Minute))
+
+	runFresh := buildRun()
+	runFresh.Status = "running"
+	runFresh.UpdatedAt = &fresh
+	runStale := buildRun()
+	runStale.Status = "running"
+	runStale.UpdatedAt = &overStale
+	// seq: first Load sees fresh (base), later Loads see the stale snapshot.
+	store.seq = []*model.Run{runFresh, runStale}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: overStale}
+	jobs.lookup["j1"] = rec
+
+	s.now = waitClock(start)
+	done := make(chan struct{})
+	var out model.StatusOutput
+	go func() {
+		_, out, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("stalled transition did not wake the wait")
+	}
+	if out.Status != "stalled" {
+		t.Fatalf("want stalled after wake, got %q", out.Status)
+	}
+}

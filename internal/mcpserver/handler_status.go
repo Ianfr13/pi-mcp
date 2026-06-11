@@ -173,7 +173,7 @@ func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOut
 				if tgt.mode == model.ModeWrite {
 					out.Write = s.writeBlock(tgt, nil)
 				}
-				out.Progress = progressBlock(tgt, now, wtFiles, wtLast, wtOK)
+				out.Progress = progressBlock(tgt, now, nil, wtFiles, wtLast, wtOK)
 				return out
 			}
 			// runId path for a run that does not exist yet -> queued/pending, NOT an error
@@ -250,24 +250,32 @@ func (s *Server) buildStatus(tgt resolved, in model.StatusInput) model.StatusOut
 	// Heartbeat for a still-running job: elapsed time + (write) worktree activity,
 	// so callers can tell a slow-but-working job from a wedged one.
 	if !isTerminal(out.Status) {
-		out.Progress = progressBlock(tgt, now, wtFiles, wtLast, wtOK)
+		out.Progress = progressBlock(tgt, now, run.UpdatedAt, wtFiles, wtLast, wtOK)
 	}
 	return out
 }
 
-// progressBlock builds the elapsed-time heartbeat plus, for write jobs, the
-// worktree file count and the age of the newest change. Durations are clamped at
-// zero so clock skew (a startedAt or worktree mtime ahead of now) never surfaces a
-// nonsensical negative. Returns nil when there is no owning job / no start time
-// (e.g. the runId path for an external run).
-func progressBlock(tgt resolved, now time.Time, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
+// progressBlock builds the elapsed-time heartbeat plus the age of the newest
+// observed activity: run-file updatedAt (all modes) vs worktree mtime (write).
+// This is what makes the early-inactivity warning legible to the caller
+// ("no activity for Xmin") even for read jobs. Durations clamp at zero.
+func progressBlock(tgt resolved, now time.Time, runUpdated *time.Time, wtFiles int, wtLast time.Time, wtOK bool) *model.Progress {
 	if !tgt.hasJob || tgt.startedAt.IsZero() {
 		return nil
 	}
 	p := &model.Progress{ElapsedSeconds: clampSeconds(now.Sub(tgt.startedAt))}
 	if wtOK {
 		p.WorktreeFiles = wtFiles
-		la := clampSeconds(now.Sub(wtLast))
+	}
+	var last time.Time
+	if runUpdated != nil {
+		last = *runUpdated
+	}
+	if wtOK && wtLast.After(last) {
+		last = wtLast
+	}
+	if !last.IsZero() {
+		la := clampSeconds(now.Sub(last))
 		p.LastActivitySeconds = &la
 	}
 	return p
@@ -329,29 +337,51 @@ func failureMessage(tgt resolved, run *model.Run) string {
 	return config.ErrUnknown
 }
 
-// waitForChange long-polls until the wake predicate fires or the wait cap elapses.
+// waitForChange long-polls until: the wake predicate fires (terminal, journal
+// growth, agents growth, phase change), the run transitions INTO stalled, the
+// early-inactivity warning fires (once per activity epoch — see
+// deltaTracker.shouldWarn), or the wait cap elapses. A wait STARTED while
+// already stalled does not return immediately — it waits for change/cap, so a
+// caller seeing "stalled" and re-waiting does not busy-spin.
 func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 	deadline := s.now().Add(s.waitCap)
 	var base snapshot
 	haveBase := false
+	baseStalled := false
 
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
 	for {
+		now := s.now()
 		run, err := s.store.Load(tgt.runsDir, tgt.runID)
 		if err == nil {
 			cur := snapshotOf(run)
+			_, wtLast, wtOK := s.worktreeLast(tgt)
+			worktreeActive := wtOK && now.Sub(wtLast).Abs() <= config.StaleThreshold
+			stalledNow := liveStatus(run.Status, run.UpdatedAt, now, s.pidIsAlive(tgt), worktreeActive) == "stalled"
 			if !haveBase {
 				base, haveBase = cur, true
+				baseStalled = stalledNow
 				if cur.terminal {
 					return
 				}
-			} else if wakeChanged(base, cur) {
-				return
+			} else {
+				if wakeChanged(base, cur) {
+					return
+				}
+				if stalledNow && !baseStalled {
+					return // transitioned into stalled during this wait
+				}
+			}
+			// Early-inactivity warning: newest of run-file update / worktree write.
+			if la, ok := lastActivity(run, wtLast, wtOK); ok && now.Sub(la) > config.EarlyInactivityWarn {
+				if s.delta.shouldWarn(deltaKey(tgt), la) {
+					return
+				}
 			}
 		}
-		if !s.now().Before(deadline) {
+		if !now.Before(deadline) {
 			return
 		}
 		select {
@@ -360,4 +390,26 @@ func (s *Server) waitForChange(ctx context.Context, tgt resolved) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// worktreeLast fetches write-job worktree activity (zero values for read jobs).
+func (s *Server) worktreeLast(tgt resolved) (int, time.Time, bool) {
+	if tgt.mode != model.ModeWrite || !tgt.hasJob {
+		return 0, time.Time{}, false
+	}
+	return s.jobs.WorktreeActivity(tgt.jobID)
+}
+
+// lastActivity is the newest observed activity: run.updatedAt vs the worktree
+// mtime. ok=false when neither signal exists (never warn on missing data).
+func lastActivity(run *model.Run, wtLast time.Time, wtOK bool) (time.Time, bool) {
+	var la time.Time
+	ok := false
+	if run.UpdatedAt != nil {
+		la, ok = *run.UpdatedAt, true
+	}
+	if wtOK && wtLast.After(la) {
+		la, ok = wtLast, true
+	}
+	return la, ok
 }
