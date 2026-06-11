@@ -28,6 +28,9 @@ type Config struct {
 	// when there is no readable run file. Injected by the app (runstore-backed);
 	// nil disables snapshotting (tests).
 	SnapshotRun func(runsDir, runID string) []byte
+	// Subscribe is the fsnotify seam for correlate's runsDir wake (nil -> pure
+	// polling; tests). Events are hints — the readdir re-check stays the truth.
+	Subscribe func(dir string) (<-chan struct{}, func(), error)
 }
 
 // Registry is the concurrency-capped, disk-persisted job map.
@@ -44,6 +47,11 @@ type Registry struct {
 	launcher   Launcher
 	correlator Correlator
 	pruner     Pruner
+
+	// subscribe is the fsnotify seam (watch.Subscribe in production; nil in
+	// most tests -> pure ticker). Events are hints: the correlate re-reads and
+	// re-evaluates its predicate on every wake regardless of source.
+	subscribe func(dir string) (<-chan struct{}, func(), error)
 
 	// hasRunFile reports whether a run file exists in runsDir (the fleet started).
 	// It is the authoring-retry oracle: a failure with NO run file is an authoring
@@ -88,6 +96,7 @@ func NewRegistry(cfg Config, l Launcher, c Correlator, p Pruner) (*Registry, err
 		ownerPid:       os.Getpid(),
 		ownerStartedAt: now().UTC().Format(time.RFC3339Nano),
 		snapshotRun:    cfg.SnapshotRun,
+		subscribe:      cfg.Subscribe,
 	}, nil
 }
 
@@ -349,7 +358,14 @@ func (r *Registry) correlate(ctx context.Context, j *Job, sessionCh <-chan strin
 		return
 	}
 
-	// Poll for the late-arriving run file until it resolves or the job ends.
+	var wake <-chan struct{}
+	if r.subscribe != nil {
+		if ch, cancel, err := r.subscribe(j.Record.RunsDir); err == nil {
+			wake = ch
+			defer cancel()
+		}
+	}
+
 	ticker := time.NewTicker(correlatePollInterval)
 	defer ticker.Stop()
 	for {
@@ -357,16 +373,17 @@ func (r *Registry) correlate(ctx context.Context, j *Job, sessionCh <-chan strin
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.mu.Lock()
-			resolved := r.tryResolveRunUnlocked(j, sid)
-			if resolved {
-				j.updatedAt = r.now()
-				_ = r.flushUnlocked()
-			}
-			r.mu.Unlock()
-			if resolved {
-				return
-			}
+		case <-wake:
+		}
+		r.mu.Lock()
+		resolved := r.tryResolveRunUnlocked(j, sid)
+		if resolved {
+			j.updatedAt = r.now()
+			_ = r.flushUnlocked()
+		}
+		r.mu.Unlock()
+		if resolved {
+			return
 		}
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"pi-mcp/internal/config"
 	"pi-mcp/internal/jobs"
 	"pi-mcp/internal/mcpserver"
+	"pi-mcp/internal/watch"
 )
 
 const (
@@ -130,6 +131,7 @@ func buildRegistryReal(Deps) (*jobs.Registry, error) {
 			PersistPath:  persist,
 			WorktreeRoot: wtRoot,
 			SnapshotRun:  snapshotRunFile,
+			Subscribe:    watch.Subscribe,
 		},
 		realLauncher{},
 		realCorrelator{},

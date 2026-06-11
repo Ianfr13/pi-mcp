@@ -159,3 +159,44 @@ func TestCorrelateStopsWhenJobEndsWithoutRunFile(t *testing.T) {
 		t.Fatalf("session id should still be pushed immediately, got %q", final.SessionID)
 	}
 }
+
+// TestCorrelate_EventWakeResolvesWithoutTick proves the fsnotify wake resolves
+// the runId without waiting for the fallback tick: the ticker is 1h, so ONLY
+// the injected wake can drive the second lookup.
+func TestCorrelate_EventWakeResolvesWithoutTick(t *testing.T) {
+	old := correlatePollInterval
+	correlatePollInterval = time.Hour
+	defer func() { correlatePollInterval = old }()
+
+	dir := t.TempDir()
+	fl := newFakeLauncher("sess-evt")
+	// First (immediate) lookup misses; the wake-driven lookup resolves.
+	corr := &lateCorrelator{failUntil: 1, runID: "run-evt"}
+	wake := make(chan struct{}, 1)
+	r := mustRegistry(t, Config{
+		Cap: 1, PersistPath: filepath.Join(dir, "registry.db"),
+		Subscribe: func(string) (<-chan struct{}, func(), error) { return wake, func() {}, nil },
+	}, fl, corr, &fakePruner{})
+
+	rec, err := r.Submit(context.Background(), Spec{Mode: model.ModeRead, CWD: "/p", RunsDir: "/p/runs"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond) // let correlate consume the sessionId + first lookup
+	wake <- struct{}{}                // "the run file just appeared"
+
+	deadline := time.Now().Add(3 * time.Second)
+	var got model.JobRecord
+	for time.Now().Before(deadline) {
+		got, _ = r.Lookup(rec.JobID)
+		if got.RunID == "run-evt" {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got.RunID != "run-evt" {
+		t.Fatalf("event wake did not resolve RunID (ticker is 1h); correlator calls=%d", corr.callCount())
+	}
+	fl.release(0)
+	r.waitJob(rec.JobID)
+}

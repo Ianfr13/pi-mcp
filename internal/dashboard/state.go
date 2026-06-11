@@ -97,16 +97,26 @@ type JobDetail struct {
 	Authoring    *model.AuthoringInfo       `json:"authoring,omitempty"` // blind-window live plan
 }
 
-// readRun is the run-file loader seam (overridable in tests). It builds the path
-// <runsDir>/<runId>.json and decodes it with runstore.ReadRun, which transparently
-// recovers from the sibling .bak snapshot when the primary .json is missing or
-// corrupt (pi writes .bak alongside). NOTE: do NOT swap this for runstore.Load —
-// Load short-circuits on os.Stat(.json) and never reaches the .bak fallback, so a
+// readRunFile decodes one run file via runstore.ReadRun (.bak fallback inside).
+func readRunFile(path string) (*model.Run, error) { return runstore.ReadRun(path) }
+
+// runFiles is the package-level parse cache for live run files.
+var runFiles = newRunCache()
+
+// readRun is the run-file loader seam (overridable in tests). It routes cache
+// hits through runFiles and falls back to runstore.ReadRun for .bak recovery on
+// stat-miss or parse error. NOTE: do NOT swap this for runstore.Load — Load
+// short-circuits on os.Stat(.json) and never reaches the .bak fallback, so a
 // .json-missing/.bak-present run would wrongly read as "no run data".
 var readRun = func(runsDir, runID string) (*model.Run, error) {
 	if runID == "" {
 		return nil, fs.ErrNotExist
 	}
+	if run, err := runFiles.read(runsDir, runID); err == nil {
+		return run, nil
+	}
+	// stat-miss / parse error: the full ReadRun path (.bak recovery). Never
+	// cached — recovery must re-evaluate every time.
 	return runstore.ReadRun(filepath.Join(runsDir, runID+".json"))
 }
 

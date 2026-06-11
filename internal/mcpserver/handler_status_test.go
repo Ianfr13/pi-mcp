@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -329,6 +330,7 @@ func TestStatus_WaitWakesOnJournalGrowth(t *testing.T) {
 	j := newFakeJobs()
 	j.lookup["job-lp"] = model.JobRecord{JobID: "job-lp", RunsDir: "/runs", RunID: r1.RunID, PID: 1, Status: model.JobRunning}
 	srv := New(j, store)
+	srv.subscribe = nil
 	srv.pollInterval = time.Millisecond
 	srv.waitCap = 2 * time.Second
 
@@ -355,6 +357,7 @@ func TestStatus_WaitCapReturnsWithoutChange(t *testing.T) {
 	j := newFakeJobs()
 	j.lookup["job-cap"] = model.JobRecord{JobID: "job-cap", RunsDir: "/runs", RunID: r.RunID, PID: 1, Status: model.JobRunning}
 	srv := New(j, store)
+	srv.subscribe = nil
 	srv.pollInterval = time.Millisecond
 	srv.waitCap = 20 * time.Millisecond // tiny cap -> returns quickly
 
@@ -728,6 +731,7 @@ func TestWait_EarlyInactivityWarningWakesOnce(t *testing.T) {
 	jobs := newFakeJobs()
 	store := newFakeStore()
 	s := New(jobs, store)
+	s.subscribe = nil
 	s.pollInterval = time.Millisecond
 	s.waitCap = time.Hour // never the cap: the warning must end the wait
 
@@ -822,6 +826,7 @@ func TestWait_StalledTransitionWakes(t *testing.T) {
 	jobs := newFakeJobs()
 	store := newFakeStore()
 	s := New(jobs, store)
+	s.subscribe = nil
 	s.pollInterval = time.Millisecond
 	s.waitCap = time.Hour
 
@@ -867,6 +872,7 @@ func TestWait_WakesWhenRunFileAppears(t *testing.T) {
 	jobs := newFakeJobs()
 	store := newFakeStore()
 	s := New(jobs, store)
+	s.subscribe = nil
 	s.pollInterval = time.Millisecond
 	s.waitCap = time.Hour // only the appearance wake may end this wait
 	s.sleep = func(time.Duration) {}
@@ -890,5 +896,46 @@ func TestWait_WakesWhenRunFileAppears(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("run-file appearance did not wake the wait (cap is 1h)")
+	}
+}
+
+// TestWait_EventWakeBeatsSlowTicker proves the fsnotify wake channel ends the
+// wait before the fallback ticker fires. The ticker is set to 1h so ONLY the
+// injected event can drive the second lookup.
+func TestWait_EventWakeBeatsSlowTicker(t *testing.T) {
+	jobs := newFakeJobs()
+	store := newFakeStore()
+	s := New(jobs, store)
+	s.pollInterval = time.Hour // ticker can never fire: only the event can wake
+	s.waitCap = time.Hour
+	s.now = time.Now
+
+	wake := make(chan struct{}, 1)
+	s.subscribe = func(dir string) (<-chan struct{}, func(), error) {
+		return wake, func() {}, nil
+	}
+
+	r1 := buildRun()
+	r1.Status = "running"
+	r2 := buildRun()
+	r2.Status = "running"
+	r2.Journal = append(r2.Journal, model.JournalEntry{Index: 0, Result: json.RawMessage(`1`)})
+	store.seq = []*model.Run{r1, r2}
+
+	rec := model.JobRecord{JobID: "j1", RunID: "r1", RunsDir: "/runs", Mode: model.ModeRead,
+		Status: model.JobRunning, StartedAt: time.Now()}
+	jobs.lookup["j1"] = rec
+
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = s.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "j1", Wait: true})
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the wait take its base snapshot
+	wake <- struct{}{}                // fsnotify hint: journal grew
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("event wake did not end the wait (ticker is 1h)")
 	}
 }

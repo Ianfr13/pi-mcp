@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -44,4 +45,42 @@ func TestPoller_LatestState(t *testing.T) {
 	if got.Counts.Total != 4 {
 		t.Errorf("latest total=%d want 4", got.Counts.Total)
 	}
+}
+
+// TestPoller_EventWakeTicksWithoutInterval: interval is 1h, so only the
+// injected fsnotify wake can produce the second broadcast.
+func TestPoller_EventWakeTicksWithoutInterval(t *testing.T) {
+	sink := &captureSink{}
+	p := NewPoller("unused.db", "/state", sink)
+	p.interval = time.Hour
+	wake := make(chan struct{}, 1)
+	p.subscribe = func(string) (<-chan struct{}, func(), error) { return wake, func() {}, nil }
+
+	calls := 0
+	p.readRegistry = func(string) ([]model.JobRecord, error) {
+		calls++
+		recs := recsForTest()
+		if calls > 1 {
+			recs = recs[:len(recs)-1] // shrink the fleet so the woken tick broadcasts
+		}
+		return recs, nil
+	}
+	p.now = func() time.Time { return nowFresh }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	waitCount := func(n int, what string) {
+		deadline := time.Now().Add(2 * time.Second)
+		for sink.count() < n && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if sink.count() < n {
+			t.Fatalf("%s: broadcasts=%d want >=%d", what, sink.count(), n)
+		}
+	}
+	waitCount(1, "initial tick")
+	wake <- struct{}{}
+	waitCount(2, "event wake (interval is 1h)")
 }
