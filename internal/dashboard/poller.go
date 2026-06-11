@@ -33,10 +33,11 @@ type Poller struct {
 	// subscribe is the fsnotify seam. When nil, Run falls back to the ticker.
 	subscribe func(dir string) (<-chan struct{}, func(), error)
 
-	mu       sync.Mutex
-	latest   DashboardState
-	lastHash [32]byte
-	primed   bool
+	mu         sync.Mutex
+	latest     DashboardState
+	latestJSON []byte // serialized once per Tick; /api/state and new SSE clients reuse it
+	lastHash   [32]byte
+	primed     bool
 
 	wmu  sync.Mutex        // guards subs (Tick is public: tests call it while Run is live)
 	subs map[string]*subHandle // watched dir -> handle
@@ -173,6 +174,7 @@ func (p *Poller) Tick() {
 
 	p.mu.Lock()
 	p.latest = st
+	p.latestJSON = full
 	changed := !p.primed || sum != p.lastHash
 	p.lastHash = sum
 	p.primed = true
@@ -190,8 +192,15 @@ func (p *Poller) Latest() DashboardState {
 	return p.latest
 }
 
-// LatestJSON returns the most recent snapshot already serialized.
+// LatestJSON returns the most recent snapshot already serialized (the bytes
+// Tick produced — no per-request re-marshal). Before the first successful
+// Tick it falls back to marshaling the zero state.
 func (p *Poller) LatestJSON() []byte {
-	b, _ := json.Marshal(p.Latest())
+	p.mu.Lock()
+	b := p.latestJSON
+	p.mu.Unlock()
+	if b == nil {
+		b, _ = json.Marshal(p.Latest())
+	}
 	return b
 }

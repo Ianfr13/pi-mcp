@@ -19,19 +19,46 @@ type parsedRun = model.Run
 // bypasses the cache entirely so the recovery semantics of readRun stay
 // untouched.
 type runCache struct {
-	mu    sync.Mutex
-	m     map[string]runCacheEntry
-	parse func(path string) (*parsedRun, error) // seam (tests count parses)
+	mu        sync.Mutex
+	m         map[string]runCacheEntry
+	parse     func(path string) (*parsedRun, error) // seam (tests count parses)
+	now       func() time.Time                      // seam (tests drive the sweep clock)
+	lastSweep time.Time
 }
 
 type runCacheEntry struct {
-	mtime time.Time
-	size  int64
-	run   *parsedRun
+	mtime    time.Time
+	size     int64
+	run      *parsedRun
+	lastUsed time.Time
 }
 
+// cacheEntryTTL / cacheSweepEvery bound the cache for the dashboard's
+// months-long lifetime: a job that leaves the registry is never read again, so
+// its entry can only be reclaimed by the sweep. The sweep is lazy (piggybacks
+// on reads, no goroutine) and the TTL is generous — re-parsing one stale file
+// after 30 quiet minutes is noise, an entry per run ever seen is a leak.
+const (
+	cacheEntryTTL   = 30 * time.Minute
+	cacheSweepEvery = 5 * time.Minute
+)
+
 func newRunCache() *runCache {
-	return &runCache{m: map[string]runCacheEntry{}, parse: defaultParse}
+	return &runCache{m: map[string]runCacheEntry{}, parse: defaultParse, now: time.Now}
+}
+
+// sweepLocked drops entries unused past the TTL, at most once per
+// cacheSweepEvery. Caller holds mu.
+func (c *runCache) sweepLocked(now time.Time) {
+	if now.Sub(c.lastSweep) < cacheSweepEvery {
+		return
+	}
+	c.lastSweep = now
+	for k, e := range c.m {
+		if now.Sub(e.lastUsed) > cacheEntryTTL {
+			delete(c.m, k)
+		}
+	}
 }
 
 // defaultParse is the uncached single-file loader (no .bak handling here —
@@ -59,18 +86,23 @@ func (c *runCache) read(runsDir, runID string) (*parsedRun, error) {
 		return nil, err
 	}
 	key := path
+	now := c.now()
 	c.mu.Lock()
+	c.sweepLocked(now)
 	e, ok := c.m[key]
-	c.mu.Unlock()
 	if ok && e.mtime.Equal(st.ModTime()) && e.size == st.Size() {
+		e.lastUsed = now
+		c.m[key] = e
+		c.mu.Unlock()
 		return e.run, nil
 	}
+	c.mu.Unlock()
 	run, err := c.parse(path)
 	if err != nil {
 		return nil, err // do not cache failures (mid-write); next tick retries
 	}
 	c.mu.Lock()
-	c.m[key] = runCacheEntry{mtime: st.ModTime(), size: st.Size(), run: run}
+	c.m[key] = runCacheEntry{mtime: st.ModTime(), size: st.Size(), run: run, lastUsed: now}
 	c.mu.Unlock()
 	return run, nil
 }
