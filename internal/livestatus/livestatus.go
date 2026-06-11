@@ -36,11 +36,12 @@ func IsTerminal(mapped string) bool {
 }
 
 // Derive applies the liveness override to a disk status. A non-terminal status
-// whose updatedAt is older than config.StaleThreshold, OR whose process is
-// confirmed dead, becomes "failed". A recently-active worktree overrides
-// run-file staleness (a direct-editing write job freezes its run file while
-// alive). A confirmed-dead pid still wins. pidAlive==true means "alive or
-// unknown" (callers with no liveness signal pass true).
+// whose process is confirmed dead becomes "failed". A non-terminal status whose
+// updatedAt is older than config.StaleThreshold (and whose worktree is idle)
+// becomes "stalled" — NON-terminal: the run may resume, and callers (pi_status
+// waits, dashboard) treat it as a wake/display signal, not an exit. A
+// recently-active worktree overrides run-file staleness. pidAlive==true means
+// "alive or unknown".
 func Derive(disk string, updatedAt *time.Time, now time.Time, pidAlive, worktreeActive bool) string {
 	mapped := MapDisk(disk)
 	if IsTerminal(mapped) {
@@ -53,7 +54,7 @@ func Derive(disk string, updatedAt *time.Time, now time.Time, pidAlive, worktree
 		return mapped
 	}
 	if updatedAt != nil && now.Sub(*updatedAt) > config.StaleThreshold {
-		return "failed"
+		return "stalled"
 	}
 	return mapped
 }

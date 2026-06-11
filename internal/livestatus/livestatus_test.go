@@ -32,9 +32,9 @@ func TestDerive(t *testing.T) {
 	if got := Derive("running", &fresh, now, true, false); got != "running" {
 		t.Errorf("fresh running -> %q want running", got)
 	}
-	// running + stale -> failed.
-	if got := Derive("running", &stale, now, true, false); got != "failed" {
-		t.Errorf("stale running -> %q want failed", got)
+	// running + stale + alive -> stalled (NON-terminal: may resume).
+	if got := Derive("running", &stale, now, true, false); got != "stalled" {
+		t.Errorf("stale running -> %q want stalled", got)
 	}
 	// running + stale BUT worktree active -> running.
 	if got := Derive("running", &stale, now, true, true); got != "running" {
@@ -54,5 +54,26 @@ func TestDerive_LongRunningAgentNotStale(t *testing.T) {
 	longRun := now.Add(-20 * time.Minute)
 	if got := Derive("running", &longRun, now, true, false); got != "running" {
 		t.Fatalf("20-min-old running agent -> %q want running (StaleThreshold must exceed the agent timeout)", got)
+	}
+}
+
+func TestDerive_StaleAliveBecomesStalledNotFailed(t *testing.T) {
+	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-(config.StaleThreshold + time.Minute))
+
+	// pid alive (or unknown) + stale run file -> stalled (non-terminal, may resume)
+	if got := Derive("running", &old, now, true, false); got != "stalled" {
+		t.Fatalf("stale+alive: want stalled, got %q", got)
+	}
+	if IsTerminal("stalled") {
+		t.Fatalf("stalled must be NON-terminal")
+	}
+	// confirmed-dead pid still wins -> failed
+	if got := Derive("running", &old, now, false, false); got != "failed" {
+		t.Fatalf("dead pid: want failed, got %q", got)
+	}
+	// active worktree still overrides staleness -> running
+	if got := Derive("running", &old, now, true, true); got != "running" {
+		t.Fatalf("active worktree: want running, got %q", got)
 	}
 }

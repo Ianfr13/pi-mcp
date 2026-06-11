@@ -176,7 +176,10 @@ func TestStatus_CompletedReadResultAndIntermediate(t *testing.T) {
 	}
 }
 
-func TestStatus_StaleRunningBecomesFailed(t *testing.T) {
+func TestStatus_StaleRunningBecomesStalled(t *testing.T) {
+	// A non-terminal run with a stale updatedAt and a live (or unknown) pid is
+	// STALLED (NON-terminal: may resume), NOT failed. Confirmed-dead pid is the
+	// only path that still flips to failed.
 	run := buildRun()
 	run.Status = "running"
 	old := mustTime("2020-01-01T00:00:00Z")
@@ -191,8 +194,13 @@ func TestStatus_StaleRunningBecomesFailed(t *testing.T) {
 	srv.now = func() time.Time { return mustTime("2026-06-07T00:00:00Z") }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-3"})
-	if out.Status != "failed" {
-		t.Fatalf("stale running must map to failed, got %q", out.Status)
+	if out.Status != "stalled" {
+		t.Fatalf("stale running must map to stalled (NON-terminal), got %q", out.Status)
+	}
+	// stalled is informational: no Error surfaced (regression guard for
+	// buildStatus's `out.Status == "failed" || "aborted"` arm).
+	if out.Error != "" {
+		t.Fatalf("stalled must NOT carry an error, got %q", out.Error)
 	}
 }
 
@@ -563,14 +571,18 @@ func TestStatus_WriteFarFutureMtimeDoesNotMaskWedge(t *testing.T) {
 	srv.now = func() time.Time { return now }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ff"})
-	if out.Status != "failed" {
-		t.Fatalf("far-future mtime must not mask a wedged job, got %q", out.Status)
+	// Far-future mtime is NOT plausible clock skew and must not be trusted as
+	// liveness. With a stale run file + non-active worktree, the job is stalled
+	// (NON-terminal), not failed — pid is alive or unknown.
+	if out.Status != "stalled" {
+		t.Fatalf("far-future mtime must not mask a wedged job -> stalled, got %q", out.Status)
 	}
 }
 
-func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
+func TestStatus_WriteStaleWorktreeStillStalls(t *testing.T) {
 	// A write job whose run file is stale AND whose worktree is NOT changing is
-	// genuinely wedged/dead -> staleness still applies (no false liveness).
+	// quiet — pid is still considered alive (or unknown) so this is "stalled"
+	// (NON-terminal), not "failed". confirmed-dead pid is the only failure path.
 	now := mustTime("2026-06-08T12:00:00Z")
 	staleUpd := now.Add(-(config.StaleThreshold + time.Minute))
 
@@ -593,8 +605,8 @@ func TestStatus_WriteStaleWorktreeStillFails(t *testing.T) {
 	srv.now = func() time.Time { return now }
 
 	_, out, _ := srv.handleStatus(ctxBG(), nil, model.StatusInput{JobID: "job-ws"})
-	if out.Status != "failed" {
-		t.Fatalf("stale run file + inactive worktree must fail, got %q", out.Status)
+	if out.Status != "stalled" {
+		t.Fatalf("stale run file + inactive worktree must stall (NON-terminal), got %q", out.Status)
 	}
 }
 

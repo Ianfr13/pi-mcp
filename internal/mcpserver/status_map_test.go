@@ -35,9 +35,9 @@ func TestStalenessOverride(t *testing.T) {
 	if got := liveStatus("running", &fresh, now, true, false); got != "running" {
 		t.Fatalf("fresh running want running got %q", got)
 	}
-	// running + stale updatedAt + no worktree activity => failed
-	if got := liveStatus("running", &stale, now, true, false); got != "failed" {
-		t.Fatalf("stale running want failed got %q", got)
+	// running + stale updatedAt + no worktree activity => stalled (NON-terminal)
+	if got := liveStatus("running", &stale, now, true, false); got != "stalled" {
+		t.Fatalf("stale running want stalled got %q", got)
 	}
 	// running + pid dead (same session) => failed even if fresh
 	if got := liveStatus("running", &fresh, now, false, false); got != "failed" {

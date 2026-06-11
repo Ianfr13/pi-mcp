@@ -36,6 +36,7 @@ type Counts struct {
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
 	Aborted   int `json:"aborted"`
+	Stalled   int `json:"stalled"`
 	Total     int `json:"total"`
 }
 
@@ -127,6 +128,8 @@ func BuildState(recs []model.JobRecord, stateDir string, now time.Time) Dashboar
 			st.Counts.Failed++
 		case "aborted":
 			st.Counts.Aborted++
+		case "stalled":
+			st.Counts.Stalled++
 		}
 	}
 	sort.SliceStable(st.Jobs, func(a, b int) bool {
